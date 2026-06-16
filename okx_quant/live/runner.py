@@ -1,39 +1,31 @@
-"""实盘/模拟盘交易引擎 —— 连接策略到 OKX 真实/模拟环境。
+"""实盘/模拟盘交易引擎 — 连接策略到 OKX 真实/模拟环境。
 
 架构::
 
     Strategy.on_bar()
         │
         ▼
-    LiveExecutor.submit()       ← 同步，返回 order_id
+    self.buy() / self.sell()
         │
         ▼
-    RiskManager.submit()        ← 交易前检查
+    RiskManager.submit()          ← 预交易检查
         │
         ▼
-    OrderManager.submit_order() ← REST → OKX API
+    LiveExecutor.submit()         ← 同步接口，推入异步队列
         │
         ▼
-    WebSocket push              ← 订单状态更新回传 OMS
+    OrderManager.submit_order()   ← REST → OKX API
+        │
+        ▼
+    WebSocket push                ← 订单状态更新回传
 
-``LiveRunner`` 将所有组件串联在一起：
+K 线闭合检测：
+    OKX 实时推送 candle 更新。当 ``confirmed`` 字段为 True 且时间戳
+    超过上次处理的时间戳时，判定为新闭合 K 线，触发 ``strategy.on_bar()``。
 
-1. **RESTClient** —— 初始账户余额 + 合约规格。
-2. **WebSocketClient** —— 订阅 K 线和订单通道。
-3. **OrderManager** —— 通过 WS 推送跟踪所有活跃订单。
-4. **RiskManager** —— 包含频率限制、胖手指检查、Kill Switch 的中间件。
-5. **LiveExecutor** —— 将同步 ``buy()/sell()`` 桥接到异步 OMS。
-
-K 线收盘检测：
-    OKX 实时推送蜡烛图更新。当收到的蜡烛时间戳**晚于**上一根已处理
-    K 线的时间戳时（即已进入下一个 K 线周期），该 K 线被视为**已收盘**。
-    已收盘的 K 线随后被分发到 ``strategy.on_bar()``。
-
-优雅关闭：
-    收到 SIGINT（Ctrl+C）时，运行器：
-    1. 调用 ``strategy.on_stop()``。
-    2. 撤销所有待执行订单。
-    3. 关闭 WS 和 REST 连接。
+优雅退出：
+    捕获 SIGINT (Ctrl+C)，自动调用 ``strategy.on_stop()``，
+    撤销所有挂单，关闭连接。
 """
 
 from __future__ import annotations
@@ -43,12 +35,13 @@ import logging
 import signal
 import time
 from typing import Any, Callable, Coroutine
+import uuid
 
 from okx_quant.config.auth import OKXAuth
 from okx_quant.config.settings import OKXConfig
 from okx_quant.gateway.rest_client import RESTClient
 from okx_quant.gateway.ws_client import WebSocketClient
-from okx_quant.models.market import BarData, OrderData, OrderStatus, TickData
+from okx_quant.models.market import BarData, OrderData, OrderStatus
 from okx_quant.oms.order_manager import OrderManager
 from okx_quant.risk.risk_manager import RiskConfig, RiskManager
 from okx_quant.strategy.base import BaseStrategy, Position, StrategyExecutor
@@ -57,103 +50,28 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# LiveExecutor — bridges strategy buy()/sell() to OrderManager
+# LiveExecutor — 同步接口 + 异步队列
 # ---------------------------------------------------------------------------
 
 
 class LiveExecutor(StrategyExecutor):
-    """用于实盘/模拟交易的 StrategyExecutor。
+    """同步策略接口 → 异步订单队列的桥接执行器。
 
-    当策略调用 ``self.buy(size)`` 时，调用流程：
-        Strategy → LiveExecutor.submit() → RiskManager → OrderManager → REST
+    当策略调用 ``self.buy(size)`` 时，订单被推入 ``asyncio.Queue``，
+    由后台任务消费并提交到 OrderManager。
 
-    这是 ``_BacktestExecutor`` 的**实盘对应实现**。两者实现相同的 ``StrategyExecutor`` 协议，
-    因此策略代码在回测和实盘模式下完全一致。
-    """
-
-    def __init__(self, oms: OrderManager) -> None:
-        self._oms = oms
-
-    def submit(
-        self,
-        side: str,
-        price: float | None,
-        quantity: float,
-        order_type: str,
-        pos_side: str,
-    ) -> str:
-        """通过 OrderManager 提交订单。
-
-        Returns:
-            OKX 订单 ID（来自 REST response）。
-        """
-        # The OrderManager.submit_order is async — we schedule it on the
-        # running event loop without blocking the strategy.
-        loop = asyncio.get_running_loop()
-        future = asyncio.ensure_future(
-            self._submit_async(side, price, quantity, order_type, pos_side)
-        )
-        # Block until the order is placed (strategy expects a sync return)
-        # This is safe because the strategy runs inside the event loop's
-        # on_bar callback, which is already async.
-        return self._oms_order_id or ""
-
-    async def _submit_async(
-        self,
-        side: str,
-        price: float | None,
-        quantity: float,
-        order_type: str,
-        pos_side: str,
-    ) -> str:
-        """异步订单提交。"""
-        try:
-            order = await self._oms.submit_order(
-                symbol="",  # will be set by LiveRunner context
-                side=side,
-                order_type=order_type,
-                size=str(quantity),
-                price=str(price) if price else None,
-            )
-            self._oms_order_id = order.get("ordId", "")
-            return self._oms_order_id
-        except Exception as exc:
-            logger.error("下单失败: %s", exc)
-            return ""
-
-    def cancel(self, order_id: str) -> bool:
-        """撤销待执行订单。"""
-        loop = asyncio.get_running_loop()
-        future = asyncio.ensure_future(
-            self._oms.cancel_order("", order_id)
-        )
-        return True  # optimistic
-
-    def get_position(self, side: str) -> Position | None:
-        """获取当前仓位（实盘中未实现——请使用 OMS）。"""
-        return None
-
-
-# ---------------------------------------------------------------------------
-# Async LiveExecutor — proper async bridge
-# ---------------------------------------------------------------------------
-
-
-class AsyncLiveExecutor:
-    """异步感知执行器，正确桥接同步策略调用到异步 OMS。
-
-    与基础 ``LiveExecutor`` 不同，此版本使用 ``asyncio.Queue`` 将同步 ``submit()`` 调用
-    与异步下单解耦。队列由调用 OrderManager 的后台任务消费。
-
-    这是生产环境推荐的执行器。
+    - 市价单：fire-and-forget，返回空字符串
+    - 限价/止损单：等待实际 order_id 后返回（用于后续撤单）
     """
 
     def __init__(self, oms: OrderManager, symbol: str) -> None:
         self._oms = oms
         self._symbol = symbol
         self._queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
-        self._results: dict[str, str] = {}  # request_id → order_id
         self._task: asyncio.Task[None] | None = None
+
+        # order_id 响应通道：request_id → asyncio.Future[str]
+        self._pending_futures: dict[str, asyncio.Future[str]] = {}
 
     async def start(self) -> None:
         """启动后台订单处理任务。"""
@@ -176,12 +94,13 @@ class AsyncLiveExecutor:
         order_type: str,
         pos_side: str,
     ) -> str:
-        """将订单加入异步处理队列。
+        """提交订单到异步队列。
 
-        返回临时请求 ID。实际订单 ID 将在后台任务处理完订单后可用。
+        - 市价单：立即返回空字符串（fire-and-forget）
+        - 限价/止损单：创建 Future 并同步等待 order_id（支持后续撤单）
         """
-        import uuid
         request_id = uuid.uuid4().hex[:8]
+
         self._queue.put_nowait({
             "request_id": request_id,
             "side": side,
@@ -190,10 +109,35 @@ class AsyncLiveExecutor:
             "order_type": order_type,
             "pos_side": pos_side,
         })
-        return request_id
+
+        if order_type in ("limit", "stop"):
+            # 限价/止损单需要 order_id 用于后续撤单
+            future: asyncio.Future[str] = asyncio.get_running_loop().create_future()
+            self._pending_futures[request_id] = future
+            try:
+                # 在事件循环内同步等待（不会阻塞其他协程）
+                return asyncio.ensure_future(self._wait_for_id(request_id, future))
+            except Exception:
+                return ""
+
+        return ""  # 市价单不需要 order_id
+
+    async def _wait_for_id(self, request_id: str, future: asyncio.Future[str]) -> str:
+        """等待后台任务返回实际 order_id。"""
+        try:
+            return await asyncio.wait_for(future, timeout=15.0)
+        except asyncio.TimeoutError:
+            logger.error("等待订单 ID 超时: %s", request_id)
+            self._pending_futures.pop(request_id, None)
+            return ""
+        except Exception:
+            self._pending_futures.pop(request_id, None)
+            return ""
 
     def cancel(self, order_id: str) -> bool:
         """将撤销请求加入队列。"""
+        if not order_id:
+            return False
         self._queue.put_nowait({
             "request_id": "cancel",
             "order_id": order_id,
@@ -214,25 +158,43 @@ class AsyncLiveExecutor:
                 return
 
             try:
-                if "order_id" in item and item.get("request_id") == "cancel":
-                    await self._oms.cancel_order(self._symbol, item["order_id"])
-                else:
-                    result = await self._oms.submit_order(
-                        symbol=self._symbol,
-                        side=item["side"],
-                        order_type=item["order_type"],
-                        size=str(item["quantity"]),
-                        price=str(item["price"]) if item["price"] else None,
-                    )
-                    ord_id = result.get("ordId", "")
-                    self._results[item["request_id"]] = ord_id
-                    logger.info(
-                        "已下单: %s %s %s 数量=%s → ordId=%s",
-                        item["side"], item["order_type"], self._symbol,
-                        item["quantity"], ord_id,
-                    )
+                request_id = item.get("request_id", "")
+
+                # 撤单请求
+                if request_id == "cancel":
+                    order_id = item.get("order_id", "")
+                    await self._oms.cancel_order(self._symbol, order_id)
+                    logger.info("已撤单: %s", order_id)
+                    continue
+
+                # 下单请求
+                result = await self._oms.submit_order(
+                    symbol=self._symbol,
+                    side=item["side"],
+                    order_type=item["order_type"],
+                    size=str(item["quantity"]),
+                    price=str(item["price"]) if item["price"] else None,
+                )
+                ord_id = result.order_id  # OrderData 属性，非 dict.get()
+
+                logger.info(
+                    "已下单: %s %s %s 数量=%s → ordId=%s",
+                    item["side"], item["order_type"], self._symbol,
+                    item["quantity"], ord_id,
+                )
+
+                # 如果有等待的 Future（限价/止损单），设置结果
+                future = self._pending_futures.pop(request_id, None)
+                if future and not future.done():
+                    future.set_result(ord_id)
+
             except Exception as exc:
                 logger.error("订单处理错误: %s", exc)
+                # 设置异常给等待的 Future
+                request_id = item.get("request_id", "")
+                future = self._pending_futures.pop(request_id, None)
+                if future and not future.done():
+                    future.set_exception(exc)
 
 
 # ---------------------------------------------------------------------------
@@ -241,22 +203,9 @@ class AsyncLiveExecutor:
 
 
 class LiveRunner:
-    """实盘/模拟交易运行器 —— 主入口。
+    """实盘/模拟交易运行器 — 主入口。
 
     串联：Strategy + RiskManager + OrderManager + REST + WebSocket。
-
-    用法::
-
-        from okx_quant.strategy.templates.ema_cross import EmaCrossStrategy
-
-        runner = LiveRunner(
-            config=load_config().okx,
-            strategy=EmaCrossStrategy(),
-            strategy_params={"fast_period": 5, "slow_period": 20},
-            symbol="BTC-USDT",
-            timeframe="1H",
-        )
-        asyncio.run(runner.start())
     """
 
     def __init__(
@@ -269,7 +218,8 @@ class LiveRunner:
         risk_config: RiskConfig | None = None,
         bar_callback: Callable[[BarData], None] | None = None,
         leverage: int = 1,
-        ledger: Any = None,  # TradeLedger (optional)
+        ledger: Any = None,
+        preload_bars: int = 900,
     ) -> None:
         self._config = config
         self._strategy = strategy
@@ -279,47 +229,47 @@ class LiveRunner:
         self._bar_callback = bar_callback
         self._leverage = leverage
         self._ledger = ledger
+        self._preload_bars = preload_bars
 
-        # Auth
+        # 认证
         self._auth = OKXAuth(config)
 
-        # Components (created in start())
+        # 组件（在 start() 中创建）
         self._rest: RESTClient | None = None
         self._ws_public: WebSocketClient | None = None
         self._ws_private: WebSocketClient | None = None
         self._oms: OrderManager | None = None
         self._risk: RiskManager | None = None
-        self._executor: AsyncLiveExecutor | None = None
+        self._executor: LiveExecutor | None = None
 
-        # Risk config
+        # 风控配置
         self._risk_config = risk_config or RiskConfig()
 
-        # Bar tracking
+        # K 线跟踪
         self._last_bar_ts: int = 0
         self._bar_count: int = 0
 
-        # State
+        # 状态
         self._running = False
-        self._symbol_ws = symbol  # OKX WS format (BTC-USDT)
 
     # ------------------------------------------------------------------
-    # Lifecycle
+    # 生命周期
     # ------------------------------------------------------------------
 
     async def start(self) -> None:
-        """启动实盘运行器 —— 连接 OKX 并开始交易。"""
-        logger.info("="*60)
+        """启动实盘运行器。"""
+        logger.info("=" * 60)
         logger.info("  LiveRunner 启动中")
         logger.info("  交易对: %s | 周期: %s | 模拟盘: %s",
                      self._symbol, self._timeframe, self._config.is_demo)
-        logger.info("="*60)
+        logger.info("=" * 60)
 
-        # 1. Initialize REST client
+        # 1. 初始化 REST 客户端
         self._rest = RESTClient(self._config, self._auth)
         await self._rest.connect()
         logger.info("✅ REST 客户端已连接")
 
-        # 2. Fetch initial account state
+        # 2. 查询账户余额
         try:
             balance = await self._rest.get_balance()
             logger.info("💰 账户权益: $%.2f", balance.total_equity)
@@ -327,81 +277,73 @@ class LiveRunner:
         except Exception as exc:
             logger.warning("查询余额失败: %s", exc)
 
-        # 2b. Set leverage
+        # 3. 设置杠杆
         if self._leverage > 1:
             try:
-                result = await self._rest.set_leverage(self._symbol, self._leverage)
+                await self._rest.set_leverage(self._symbol, self._leverage)
                 logger.info("⚙️ 杠杆已设置为 %dx (%s)", self._leverage, self._symbol)
             except Exception as exc:
                 logger.warning("设置杠杆失败: %s", exc)
 
-        # 3. Pre-load historical K-line data for strategy warm-up
-        await self._preload_history()
+        # 4. 预加载历史 K 线
+        await self._preload_history(self._preload_bars)
 
-        # 4. Initialize OrderManager
-        self._oms = OrderManager(self._rest, MagicMock())  # WS injected later
+        # 5. 初始化 OrderManager
+        self._oms = OrderManager(self._rest, None)  # WS 稍后注入
+        await self._oms.start(inst_type="SWAP")
 
-        # 4. Initialize executor
-        self._executor = AsyncLiveExecutor(self._oms, self._symbol)
+        # 6. 初始化执行器
+        self._executor = LiveExecutor(self._oms, self._symbol)
         await self._executor.start()
 
-        # 5. Initialize RiskManager
+        # 7. 初始化 RiskManager
         self._risk = RiskManager(self._risk_config, self._executor)
         self._risk._on_kill = self._on_kill_switch
         logger.info("🛡️ 风控管理器已配置")
 
-        # 6. Inject executor into strategy
+        # 8. 注入执行器到策略
         self._strategy._executor = self._risk
         self._strategy.state.symbol = self._symbol
         self._strategy.state.cash = self._risk_config.initial_equity
 
-        # 7. Initialize WebSocket — OKX requires separate connections for
-        #    public channels (K-line) and private channels (orders).
-        #
-        #    IMPORTANT: For demo trading, use the PRODUCTION public WS for
-        #    market data (K-line is identical demo/real), and the DEMO private
-        #    WS for order updates.  The demo public WS (wspap) is unreliable.
-        from okx_quant.gateway.rest_client import _okx_bar
-        from okx_quant.config.settings import OKXConfig
-
-        # Public WS: candle channels MUST use the /business endpoint.
-        # /ws/v5/public does NOT support candle channels (returns 60018).
-        # Data is identical demo/real, so production endpoint is always safe.
+        # 9. 初始化 WebSocket
+        # 公共 WS：candle 频道（必须用 /business 端点）
         candle_url = "wss://ws.okx.com:8443/ws/v5/business"
         self._ws_public = WebSocketClient(candle_url)
         self._ws_public.subscribe_candles(
             self._symbol, self._timeframe, self._on_candle
         )
         logger.info("📡 公共 WS → %s %s K线（生产端点）",
-                     self._symbol, _okx_bar(self._timeframe))
-        # Private WS: use demo endpoint for demo, production for real
+                     self._symbol, self._timeframe)
+
+        # 私有 WS：订单推送
         self._ws_private = WebSocketClient(self._config.ws_private, auth=self._auth)
         self._ws_private.subscribe_orders(self._on_order_update)
-        self._oms._ws = self._ws_private  # type: ignore[attr-defined]
+        self._oms._ws = self._ws_private
         logger.info("📡 私有 WS → 订单推送 (%s)",
                      "demo" if self._config.is_demo else "production")
 
-        # 10. Strategy init + start
+        # 10. 策略初始化
         self._strategy.on_init(self._strategy_params)
         self._strategy.on_start()
         logger.info("🚀 策略 '%s' 已初始化", self._strategy.name)
 
-        # 11. Register signal handlers
+        # 11. 注册信号处理
         loop = asyncio.get_event_loop()
         for sig in (signal.SIGINT, signal.SIGTERM):
             loop.add_signal_handler(sig, lambda: asyncio.create_task(self.shutdown()))
 
-        # 12. Connect both WebSockets
+        # 12. 连接 WebSocket
         self._running = True
-        logger.info("="*60)
+        logger.info("=" * 60)
         logger.info("  ✅ LiveRunner 已启动 — 正在连接 WebSocket...")
         logger.info("  按 Ctrl+C 停止")
-        logger.info("="*60)
+        logger.info("=" * 60)
 
         await self._ws_public.connect()
         await self._ws_private.connect()
 
-        # Keep running until shutdown
+        # 保持运行直到关闭
         try:
             while self._running:
                 await asyncio.sleep(1)
@@ -411,21 +353,21 @@ class LiveRunner:
             await self.shutdown()
 
     async def shutdown(self) -> None:
-        """优雅关闭 —— 撤销订单，关闭连接。"""
+        """优雅关闭。"""
         if not self._running:
             return
         self._running = False
 
         logger.info("\n🛑 正在关闭...")
 
-        # 1. Strategy cleanup
+        # 1. 策略清理
         try:
             self._strategy.on_stop()
             logger.info("  ✅ 策略 on_stop() 已调用")
         except Exception as exc:
             logger.error("  ❌ on_stop 错误: %s", exc)
 
-        # 2. Cancel all pending orders
+        # 2. 撤销所有挂单
         if self._oms:
             active = self._oms.get_active_orders(self._symbol)
             for order in active:
@@ -435,11 +377,11 @@ class LiveRunner:
                 except Exception as exc:
                     logger.error("  ❌ 撤单失败 %s: %s", order.order_id, exc)
 
-        # 3. Stop executor
+        # 3. 停止执行器
         if self._executor:
             await self._executor.stop()
 
-        # 4. Disconnect
+        # 4. 断开连接
         if self._ws_public:
             await self._ws_public.disconnect()
         if self._ws_private:
@@ -450,19 +392,11 @@ class LiveRunner:
         logger.info("  ✅ 关闭完成")
 
     # ------------------------------------------------------------------
-    # Historical data preload
+    # 历史数据预加载
     # ------------------------------------------------------------------
 
     async def _preload_history(self, count: int = 900) -> None:
-        """通过 REST 获取历史 K 线并预填充策略 K 线窗口。
-
-        这消除了预热等待——策略可以在启动后立即交易。
-
-        Parameters:
-            count: 获取的 K 线数量（默认 900，略多于典型的宏观 EMA 周期 800）。
-        """
-        from okx_quant.gateway.rest_client import _okx_bar
-
+        """拉取历史 K 线并预填充策略 bar 窗口。"""
         logger.info("📥 正在预加载 %d 根历史 %s K线 (%s)...",
                      count, self._timeframe, self._symbol)
 
@@ -483,7 +417,6 @@ class LiveRunner:
                 remaining -= len(batch)
                 logger.info("  📥 已获取 %d 根 (累计: %d)", len(batch), len(all_bars))
 
-            # Sort chronologically and fill strategy bars
             all_bars.sort(key=lambda b: b.timestamp)
             self._strategy.bars = all_bars
             self._bar_count = len(all_bars)
@@ -499,25 +432,18 @@ class LiveRunner:
             logger.warning("⚠️ 预加载失败: %s — 将从实时数据预热", exc)
 
     # ------------------------------------------------------------------
-    # K-line callback
+    # K 线回调
     # ------------------------------------------------------------------
 
     async def _on_candle(self, bar: BarData) -> None:
-        """处理从 WebSocket 接收的 K 线数据。
-
-        K 线收盘检测：
-        - OKX 实时推送蜡烛更新（开盘/最高/最低/收盘在 K 线内变化）。``confirmed`` 字段
-          为 True 时表示 K 线已收盘。
-        - 同时检查时间戳是否已前进（新的 K 线周期）。
-        - 仅已收盘的 K 线会被分发到 ``strategy.on_bar()``。
-        """
+        """处理 WebSocket 推送的 K 线数据。"""
         if not bar.confirmed:
-            return  # intra-bar update, skip
+            return  # K 线未闭合
 
         if bar.timestamp <= self._last_bar_ts:
-            return  # already processed this bar
+            return  # 已处理
 
-        # New closed bar
+        # 新的闭合 K 线
         self._last_bar_ts = bar.timestamp
         self._bar_count += 1
 
@@ -527,31 +453,28 @@ class LiveRunner:
             bar.open, bar.high, bar.low, bar.close,
         )
 
-        # Update strategy's bar window
+        # 更新策略 K 线窗口
         self._strategy.bars.append(bar)
         if len(self._strategy.bars) > 1000:
             self._strategy.bars = self._strategy.bars[-1000:]
         self._strategy.state.bar_index = self._bar_count
 
-        # Update risk manager's market price
+        # 更新风控参考价
         if self._risk:
             self._risk.update_market_price(bar.close)
 
-        # Heartbeat: notify that we received data
-        # (HeartbeatMonitor.tick() would go here if configured)
-
-        # Dispatch to strategy
+        # 分发给策略
         try:
             signal = self._strategy.on_bar(bar)
             if signal and signal.action != "HOLD":
                 logger.info(
-                    "📡 Signal: %s (confidence=%.2f) %s",
+                    "📡 信号: %s (置信度=%.2f) %s",
                     signal.action, signal.confidence, signal.reason,
                 )
         except Exception as exc:
             logger.error("❌ 策略错误: %s", exc)
 
-        # Record equity to ledger
+        # 记录权益到账本
         if self._ledger is not None:
             try:
                 cash = self._strategy.state.cash
@@ -563,13 +486,13 @@ class LiveRunner:
                     equity=cash + pos_val,
                     cash=cash,
                     position_value=pos_val,
-                    drawdown=0.0,  # computed by ledger query
+                    drawdown=0.0,
                     ts=bar.timestamp,
                 )
             except Exception as exc:
-                logger.debug("Ledger equity write error: %s", exc)
+                logger.debug("账本权益写入错误: %s", exc)
 
-        # Notify external callback
+        # 外部回调
         if self._bar_callback:
             try:
                 self._bar_callback(bar)
@@ -577,18 +500,28 @@ class LiveRunner:
                 logger.error("❌ K线回调错误: %s", exc)
 
     # ------------------------------------------------------------------
-    # Order update callback
+    # 订单更新回调
     # ------------------------------------------------------------------
 
     async def _on_order_update(self, order: OrderData) -> None:
-        """处理来自 WebSocket 的订单状态更新。"""
+        """处理 WebSocket 推送的订单状态更新。"""
         logger.info(
-            "📋 Order update: %s %s %s → %s (filled=%.6f/%.6f)",
+            "📋 订单更新: %s %s %s → %s (已成交=%.6f/%.6f)",
             order.order_id, order.side.value, order.symbol,
             order.status.value, order.filled_qty, order.quantity,
         )
 
-        # Record filled orders to ledger
+        # 通知风控（滑点监控）
+        if self._risk and order.status in (OrderStatus.FILLED, OrderStatus.PARTIALLY_FILLED):
+            self._risk.on_fill(
+                side=order.side.value,
+                fill_price=order.avg_price,
+                target_price=order.price,
+                quantity=order.filled_qty,
+                pos_side="long" if order.side.value == "buy" else "short",
+            )
+
+        # 记录到账本
         if self._ledger is not None and order.status in (
             OrderStatus.FILLED, OrderStatus.PARTIALLY_FILLED,
         ):
@@ -607,14 +540,14 @@ class LiveRunner:
                     "status": order.status.value,
                 })
             except Exception as exc:
-                logger.debug("Ledger trade write error: %s", exc)
+                logger.debug("账本成交写入错误: %s", exc)
 
     # ------------------------------------------------------------------
-    # Kill Switch callback
+    # Kill Switch 回调
     # ------------------------------------------------------------------
 
     def _on_kill_switch(self) -> None:
-        """RiskManager 激活 Kill Switch 时调用。"""
+        """RiskManager 触发 Kill Switch 时调用。"""
         logger.critical("🚨 KILL SWITCH 已触发 — 正在撤销所有订单")
         if self._oms:
             active = self._oms.get_active_orders(self._symbol)
@@ -622,14 +555,3 @@ class LiveRunner:
                 asyncio.ensure_future(
                     self._oms.cancel_order(self._symbol, order.order_id)
                 )
-
-
-# ---------------------------------------------------------------------------
-# Import guard for MagicMock in type hints
-# ---------------------------------------------------------------------------
-
-try:
-    from unittest.mock import MagicMock
-except ImportError:
-    class MagicMock:  # type: ignore[no-redef]
-        pass

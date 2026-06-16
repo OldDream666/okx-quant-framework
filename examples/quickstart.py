@@ -17,7 +17,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from okx_quant.models.market import BarData
 from okx_quant.backtest.engine import BacktestEngine, ExchangeConfig
-from okx_quant.strategy.templates.ema_cross import EmaCrossStrategy
+from strategies.macro_ema import MacroEmaStrategy as EmaCrossStrategy
 
 
 # ============================================================

@@ -40,7 +40,8 @@ cp .env.example .env
 编辑 `.env`：
 
 ```env
-OKX_API_KEY=your_k...nOKX_API_SECRET=your_secret
+OKX_API_KEY=your_key
+OKX_SECRET_KEY=your_secret
 OKX_PASSPHRASE=your_passphrase
 OKX_IS_DEMO=true
 ```

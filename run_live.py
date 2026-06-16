@@ -46,7 +46,7 @@ def load_strategy(class_path: str) -> type[BaseStrategy]:
 
     Examples:
         "strategies.macro_ema.MacroEmaStrategy"
-        "okx_quant.strategy.templates.ema_cross.EmaCrossStrategy"
+        "strategies.macro_ema.MacroEmaStrategy"
     """
     module_path, class_name = class_path.rsplit(".", 1)
     # Try relative import from project root first
@@ -157,6 +157,7 @@ def main():
         bar_callback=lambda bar: None,
         leverage=leverage,
         ledger=ledger,
+        preload_bars=preload_bars,
     )
 
     asyncio.run(runner.start())
