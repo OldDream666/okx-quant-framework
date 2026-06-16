@@ -14,11 +14,12 @@
 5. [运行回测](#5-运行回测)
 6. [Walk-Forward 验证](#6-walk-forward-验证)
 7. [运行实盘/模拟盘](#7-运行实盘模拟盘)
-8. [风控系统](#8-风控系统)
-9. [交易账本](#9-交易账本)
-10. [API 速查表](#10-api-速查表)
-11. [诊断与调试](#11-诊断与调试)
-12. [审计踩坑记录](#12-审计踩坑记录)
+8. [安卓手机运行（Termux）](#8-安卓手机运行termux)
+9. [风控系统](#9-风控系统)
+10. [交易账本](#10-交易账本)
+11. [API 速查表](#11-api-速查表)
+12. [诊断与调试](#12-诊断与调试)
+13. [审计踩坑记录](#13-审计踩坑记录)
 
 ---
 
@@ -445,9 +446,64 @@ python run_live.py --config configs/my_strategy.yaml --dry-run
 
 ---
 
-## 8. 风控系统
+## 8. 安卓手机运行（Termux）
 
-### 8.1 八层防御
+框架全部是纯 Python + asyncio，Termux 完全支持。
+
+### 8.1 安装
+
+```bash
+# 1. 从 F-Droid 安装 Termux（不要用 Play Store 版，过时）
+# 2. 打开 Termux，执行:
+pkg update && pkg install git
+git clone https://github.com/OldDream666/okx-quant-framework.git ~/okx-quant-framework
+bash ~/okx-quant-framework/scripts/setup_termux.sh
+```
+
+### 8.2 启动
+
+```bash
+# 前台运行（可看实时输出）
+cd ~/okx-quant-framework && source .venv/bin/activate
+python run_live.py --config configs/paper_trading.yaml
+
+# 后台运行（推荐，含 wake lock + 进程监控）
+bash scripts/run_termux_bg.sh
+```
+
+### 8.3 防止 Android 杀进程
+
+**必须做**（否则锁屏后进程被杀）：
+
+1. **Termux 通知栏** → 点击 "Acquire wakelock"（锁头图标）
+2. **系统设置** → 电池 → Termux → 不限制后台活动
+3. **最近任务** → 长按 Termux → 锁定（防止被清理）
+4. **省电模式** → 关闭，或把 Termux 加入白名单
+
+### 8.4 开机自启（可选）
+
+```bash
+# 安装 Termux:Boot (F-Droid)
+# 复制启动脚本
+cp ~/okx-quant-framework/scripts/termux_boot.sh ~/.termux/boot/start_okx_quant.sh
+# 打开 Termux:Boot 应用一次（授权），之后重启手机自动启动交易
+```
+
+### 8.5 监控
+
+```bash
+# 实时查看日志
+tail -f ~/okx-quant-framework/logs/trading_$(date +%Y-%m-%d).log
+
+# 远程 SSH 监控（推荐安装 Termux:API + openssh）
+pkg install openssh
+sshd  # 启动 SSH 服务，端口 8022
+# 电脑端: ssh -p 8022 phone_ip
+```
+
+## 9. 风控系统
+
+### 9.1 八层防御
 
 | # | 层 | 触发条件 | 行为 |
 |---|-----|---------|------|
@@ -460,14 +516,14 @@ python run_live.py --config configs/my_strategy.yaml --dry-run
 | 7 | 滑点监控 | 滑点 > max_slippage_pct | Kill Switch |
 | 8 | 回撤监控 | 从**高水位**回撤 > max_drawdown_pct | Kill Switch |
 
-### 8.2 Kill Switch
+### 9.2 Kill Switch
 
 - 一旦激活，**永久锁定**
 - 自动撤单 + **市价平仓**（带 `posSide` 参数）
 - 平仓前查询 OKX 真实持仓
 - 需重启程序才能恢复
 
-### 8.3 回撤计算
+### 9.3 回撤计算
 
 基于**高水位**而非固定初始权益：
 
@@ -483,7 +539,7 @@ python run_live.py --config configs/my_strategy.yaml --dry-run
 
 ---
 
-## 9. 交易账本
+## 10. 交易账本
 
 ### 9.1 存储结构
 
@@ -532,7 +588,7 @@ ledger.export_daily_summary()
 
 ---
 
-## 10. API 速查表
+## 11. API 速查表
 
 ### 导入路径
 
@@ -583,7 +639,7 @@ from okx_quant.monitoring.metrics import MetricsCollector, Alerter, HeartbeatMon
 
 ---
 
-## 11. 诊断与调试
+## 12. 诊断与调试
 
 ### 11.1 下单诊断
 
@@ -615,7 +671,7 @@ grep "ERROR\|OKX API 错误" logs/trading_*.log
 
 ---
 
-## 12. 审计踩坑记录
+## 13. 审计踩坑记录
 
 经过多轮安全审计，以下是所有已发现并修复的问题。**开发新功能时务必注意这些模式。**
 
