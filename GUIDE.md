@@ -1,7 +1,7 @@
 # OKX Quant Framework — 使用说明书
 
 > Async-first quantitative trading framework for OKX V5 API
-> Python 3.10+ | 249+ 单元测试 | 9 大模块
+> Python 3.10+ | 281 单元测试 | 9 大模块
 
 ---
 
@@ -17,6 +17,8 @@
 8. [风控系统](#8-风控系统)
 9. [交易账本](#9-交易账本)
 10. [API 速查表](#10-api-速查表)
+11. [诊断与调试](#11-诊断与调试)
+12. [审计踩坑记录](#12-审计踩坑记录)
 
 ---
 
@@ -50,7 +52,14 @@ OKX_IS_DEMO=true
 
 ```bash
 pytest tests/ -v
-# 预期：249 passed
+# 预期：281 passed
+```
+
+### 1.4 诊断下单
+
+```bash
+# 逐步测试 OKX API（余额→持仓→品种→杠杆→下单→撤单）
+python scripts/diagnose_order.py
 ```
 
 ---
@@ -61,32 +70,35 @@ pytest tests/ -v
 okx_quant/                  ← 框架核心（不改）
 ├── config/                 ← 配置 & 鉴权
 │   ├── settings.py         ← Pydantic 配置管理
-│   └── auth.py             ← OKX V5 签名（REST: ISO 8601, WS: Unix秒）
+│   └── auth.py             ← OKX V5 签名（REST: ISO 8601+ms+Z, WS: Unix秒）
 ├── models/
-│   └── market.py           ← TickData, BarData, OrderData, PositionData...
+│   └── market.py           ← TickData, BarData, OrderData(pos_side), PositionData(ctVal)...
 ├── gateway/
-│   ├── rest_client.py      ← 异步 REST（httpx, tdMode=cross 合约模式）
-│   └── ws_client.py        ← 异步 WebSocket（自动重连, 心跳）
+│   ├── rest_client.py      ← 异步 REST（httpx, 签名含query, 自动取整, posSide）
+│   └── ws_client.py        ← 异步 WebSocket（Lock重连, Task引用防GC, 心跳）
 ├── oms/
-│   └── order_manager.py    ← 订单管理（WS 驱动状态更新）
+│   └── order_manager.py    ← 订单管理（WS驱动, 终态自动入history, posSide透传）
 ├── strategy/               ← 策略基类定义
-│   └── base.py             ← BaseStrategy, Signal, Position
+│   └── base.py             ← BaseStrategy, Signal, Position(contract_multiplier)
 ├── backtest/               ← 回测引擎
-│   └── engine.py           ← BacktestEngine, ExchangeConfig, WalkForwardResult
+│   └── engine.py           ← BacktestEngine, ExchangeConfig, 动态Sharpe, 方向强平
 ├── live/                   ← 实盘引擎
-│   └── runner.py           ← LiveRunner（K线驱动 + 历史预加载 + 杠杆设置）
+│   └── runner.py           ← LiveRunner（持仓同步, check_account, Kill Switch平仓）
 ├── risk/
-│   └── risk_manager.py     ← 风控拦截器（代理模式, Kill Switch）
+│   └── risk_manager.py     ← 风控拦截器（敞口/杠杆/回撤, 高水位, Kill Switch）
 └── monitoring/
     ├── logger.py           ← loguru 日志（按天滚动 + 压缩）
     ├── ledger.py           ← 交易账本（JSONL 追加写入 + CSV 导出）
-    └── metrics.py          ← 指标采集 + 心跳监控 + 异步 Webhook 报警
+    └── metrics.py          ← 指标采集 + 动态Sharpe + 心跳监控 + 异步Webhook报警
 
 strategies/                 ← 你的策略（经常改）
 └── macro_ema.py            ← Macro EMA 交叉 + 宏观滤网
 
 configs/                    ← 参数配置（YAML）
 └── paper_trading.yaml      ← 模拟盘配置
+
+scripts/                    ← 工具脚本
+└── diagnose_order.py       ← OKX API 下单诊断
 
 run_live.py                 ← 通用启动脚本
 data/                       ← 交易账本（自动创建）
@@ -138,12 +150,23 @@ WebSocket:
   /ws/v5/private   → orders, account, positions（需登录）
 
 Demo WebSocket:
+  wspap.okx.com:8443/ws/v5/public?brokerId=9999
   wspap.okx.com:8443/ws/v5/private?brokerId=9999
+  wspap.okx.com:8443/ws/v5/business?brokerId=9999  ← candle 也需切 demo
 
 签名时间戳:
   REST → ISO 8601 + 毫秒 + Z (2026-06-15T12:00:00.123Z)
   WS   → Unix 秒级 (1750000000)
+  签名路径 → 包含 query string (/api/v5/trade/orders-pending?instId=BTC-USDT)
 ```
+
+### 3.3 双向持仓模式
+
+OKX 账户有 `posMode` 设置：
+- `long_short_mode`（双向）→ 每笔订单**必须**带 `posSide`（`long`/`short`）
+- `net_mode`（单向）→ 不需要 `posSide`
+
+框架自动处理：策略调用 `buy()`/`sell()` 时自动推断 `posSide`，无需手动设置。
 
 ---
 
@@ -204,10 +227,10 @@ class MyStrategy(BaseStrategy):
 ### 4.3 OKX 双向持仓模式
 
 ```
-buy()  + 无持仓 → 开多
-buy()  + 有空仓 → 平空
-sell() + 无持仓 → 开空
-sell() + 有多仓 → 平多
+buy()  + 无持仓 → 开多 (posSide=long)
+buy()  + 有空仓 → 平空 (posSide=short)
+sell() + 无持仓 → 开空 (posSide=short)
+sell() + 有多仓 → 平多 (posSide=long)
 close_long()    → 平多（隐含 posSide=long）
 close_short()   → 平空（隐含 posSide=short）
 ```
@@ -216,11 +239,25 @@ close_short()   → 平空（隐含 posSide=short）
 
 策略只需计算 `cash × pct / price`，**精度处理由框架自动完成**：
 
-- 下单时 REST 客户端自动从 OKX 获取合约规格（lot_size, tick_size, min_size）
+- 下单时 REST 客户端自动从 OKX 获取合约规格（lot_size, tick_size, min_size, ctMult）
 - 数量向下取整到 lot_size 精度（如 1.12838471 → 1.128）
 - 价格四舍五入到 tick_size 精度
 - 低于最小下单量时自动提升到 min_size
 - 合约规格首次获取后缓存，后续 O(1)
+- 支持极小 lot_size（如 1e-8）的科学计数法正确格式化
+
+### 4.5 合约乘数
+
+SWAP 合约的 `quantity` 是**张数**，不是币数。框架自动处理：
+
+```python
+# Position 对象自动携带 contract_multiplier（从 OKX ctVal 获取）
+pos = self.position_long
+pnl = pos.unrealized_pnl(current_price)  # 已自动乘以 ctVal
+
+# BTC-USDT-SWAP: ctVal=0.01, 100张涨$1000 → 盈利$1000（不是$100,000）
+# ETH-USDT-SWAP: ctVal=1.0,  10张涨$12   → 盈利$120
+```
 
 ---
 
@@ -239,6 +276,7 @@ engine = BacktestEngine(
         tick_size=0.01,
         latency_bars=1,          # 1 根 K 线延迟（防未来函数）
         leverage=20,
+        contract_multiplier=0.01,  # BTC-USDT-SWAP 面值
     ),
 )
 
@@ -249,7 +287,7 @@ result = engine.run(strategy, bars, contract_mode=True)
 
 print(f"总收益: {result.total_return:.2%}")
 print(f"最大回撤: {result.max_drawdown:.2%}")
-print(f"夏普比率: {result.sharpe_ratio:.2f}")
+print(f"夏普比率: {result.sharpe_ratio:.2f}")  # 动态年化（按K线间隔计算）
 print(f"胜率: {result.win_rate:.0%}")
 ```
 
@@ -260,14 +298,14 @@ print(f"胜率: {result.win_rate:.0%}")
 ```
 bar[i]:
   1. 更新持仓极值（移动止损数据）
-  2. 检查强平
+  2. 检查强平（方向判断：long看跌，short看涨，盈利不触发）
   3. 执行 bar[i-1] 的市价单（bar[i].open + 动态滑点）← 无未来函数
   4. 撮合挂单（限价/止损在 bar[i] 范围内）
-  5. 扣除资金费率
+  5. 扣除资金费率（按 contract_multiplier 计算）
   6. strategy.on_bar(bar[i])
      → buy()/sell() → 推入队列，bar[i+1] 执行
      → 限价/止损 → 加入 pending_orders
-  7. 记录权益
+  7. 记录权益（unrealized_pnl 已乘 contract_multiplier）
   8. 写入账本（equity.jsonl）
 ```
 
@@ -280,6 +318,8 @@ bar[i]:
 | `slippage_base` | 0.0003 | 基础滑点 |
 | `slippage_volatility_factor` | 2.0 | 波动放大系数 |
 | `tick_size` | 0.01 | 最小价格单位 |
+| `lot_size` | 1e-8 | 最小数量步长 |
+| `contract_multiplier` | 1.0 | 合约面值（SWAP 按 ctVal，现货为 1.0） |
 | `latency_bars` | 1 | 信号→执行延迟 |
 | `leverage` | 1 | 杠杆倍数 |
 | `enable_liquidation` | False | 强平检测 |
@@ -327,6 +367,10 @@ strategy_params:
 risk:
   max_order_value: 50000
   max_total_exposure: 200000
+  max_price_deviation: 0.05
+  max_orders_per_sec: 5
+  max_consecutive_failures: 5
+  max_slippage_pct: 0.01
   max_drawdown_pct: 0.20
 preload_bars: 900
 log_level: "INFO"
@@ -348,20 +392,52 @@ python run_live.py --config configs/my_strategy.yaml --dry-run
 ### 7.3 启动流程
 
 ```
-1. 加载 YAML 配置
-2. 加载 .env → OKX API 凭证
-3. 动态导入策略类
-4. 连接 REST → 查询余额
-5. 设置杠杆 (OKX set_leverage API)
-6. 拉取历史 K 线 → 预填充策略（消除预热等待）
-7. 创建账本 → data/live/
-8. 连接 WebSocket:
-   - /ws/v5/business → candle 频道
-   - /ws/v5/private  → orders 频道
-9. 等待 K 线闭合 → 策略开始工作
+1.  加载 YAML 配置
+2.  加载 .env → OKX API 凭证
+3.  动态导入策略类
+4.  连接 REST → 查询余额 → 设置 state.cash
+4b. 查询现有持仓 → 初始化 strategy.position_long/short
+5.  设置杠杆 (OKX set_leverage API)
+6.  拉取历史 K 线 → 预填充策略（消除预热等待）
+7.  创建 OMS（WS 暂未注入）
+8.  创建 LiveExecutor → RiskManager → 注入策略
+9.  创建 WebSocket:
+    - /ws/v5/business → candle 频道
+    - /ws/v5/private  → orders 频道
+9b. 注入 WS 到 OMS → 调用 oms.start() 注册订单订阅
+10. 策略初始化（on_init + on_start）
+11. 连接 WebSocket
+12. 等待 K 线闭合 → 策略开始工作
 ```
 
-### 7.4 实盘账本
+### 7.4 实盘运行时的风控调用
+
+每根 K 线闭合时（`_on_candle`）：
+
+```
+1. update_market_price(bar.close)
+2. check_account(equity, positions, bar.close)
+   ├── 更新 _current_exposure（基于真实持仓覆盖计算）
+   ├── 更新 _high_water_mark（回撤基准）
+   ├── 检查回撤 → Kill Switch
+   └── 检查杠杆
+3. strategy.on_bar(bar)
+   └── buy()/sell()
+       ├── check_exposure (步骤5)
+       └── check_leverage (步骤6)
+4. 记录权益到账本
+```
+
+订单成交时（`_on_order_update`）：
+
+```
+1. on_fill() → 滑点监控
+2. FILLED → 立即查询 OKX 真实持仓同步到策略
+   PARTIALLY_FILLED → 5秒节流同步（防频率限制）
+3. 记录到账本
+```
+
+### 7.5 实盘账本
 
 实盘运行时自动记录：
 - 每根 K 线闭合 → `data/live/equity.jsonl`
@@ -371,7 +447,7 @@ python run_live.py --config configs/my_strategy.yaml --dry-run
 
 ## 8. 风控系统
 
-### 8.1 六层防御
+### 8.1 八层防御
 
 | # | 层 | 触发条件 | 行为 |
 |---|-----|---------|------|
@@ -379,14 +455,31 @@ python run_live.py --config configs/my_strategy.yaml --dry-run
 | 2 | 频率限制 | > max_orders_per_sec | 拒绝 |
 | 3 | 乌龙指 | 限价偏离市价 > 5% | 拒绝 |
 | 4 | 单笔限额 | qty × price > max_order_value | 拒绝 |
-| 5 | 滑点监控 | 滑点 > max_slippage_pct | Kill Switch |
-| 6 | 回撤监控 | 回撤 > max_drawdown_pct | Kill Switch |
+| 5 | **敞口限制** | 总持仓名义值 > max_total_exposure | 拒绝 |
+| 6 | **杠杆限制** | 估算杠杆 > max_account_leverage | 拒绝新开仓 |
+| 7 | 滑点监控 | 滑点 > max_slippage_pct | Kill Switch |
+| 8 | 回撤监控 | 从**高水位**回撤 > max_drawdown_pct | Kill Switch |
 
 ### 8.2 Kill Switch
 
 - 一旦激活，**永久锁定**
-- 自动撤单 + 市价平仓
+- 自动撤单 + **市价平仓**（带 `posSide` 参数）
+- 平仓前查询 OKX 真实持仓
 - 需重启程序才能恢复
+
+### 8.3 回撤计算
+
+基于**高水位**而非固定初始权益：
+
+```
+高水位 = max(历史所有权益)
+回撤 = (高水位 - 当前权益) / 高水位
+
+示例：
+  初始 $10,000 → 涨到 $15,000 → 跌到 $12,000
+  回撤 = (15000 - 12000) / 15000 = 20%  ✅
+  （旧逻辑：回撤 = (10000 - 12000) / 10000 = -20%，不触发 ❌）
+```
 
 ---
 
@@ -418,12 +511,6 @@ data/
 {"ts":"2026-06-16T10:00:00","equity":80691.5,"cash":78691.5,"position_value":2000.0,"drawdown":0.012}
 ```
 
-**daily_summary.csv**：
-```csv
-date,trades,wins,losses,pnl,fees,max_drawdown,equity_close
-2026-06-16,5,3,2,152.30,8.5000,0.0230,80843.80
-```
-
 ### 9.3 使用方式
 
 ```python
@@ -431,11 +518,6 @@ from okx_quant.monitoring.ledger import TradeLedger
 
 # 回测 — 自动创建，无需手动操作
 engine = BacktestEngine(initial_capital=10000)
-result = engine.run(strategy, bars)
-# 账本在 data/backtest/
-
-# 回测 — 自定义目录
-engine = BacktestEngine(initial_capital=10000, data_dir="data/my_test")
 result = engine.run(strategy, bars)
 
 # 实盘 — run_live.py 自动创建 data/live/
@@ -459,7 +541,7 @@ ledger.export_daily_summary()
 from okx_quant.config import load_config, OKXAuth
 
 # 数据模型
-from okx_quant.models.market import BarData, TickData, OrderData
+from okx_quant.models.market import BarData, TickData, OrderData, PositionData
 
 # 网关
 from okx_quant.gateway.rest_client import RESTClient
@@ -488,40 +570,86 @@ from okx_quant.monitoring.metrics import MetricsCollector, Alerter, HeartbeatMon
 
 ### 数据模型
 
-| 类 | 说明 |
-|---|------|
-| `TickData` | 实时行情 |
-| `BarData` | K 线 |
-| `OrderData` | 订单 |
-| `PositionData` | 持仓 |
-| `Signal` | 策略信号 |
-| `Position` | 策略持仓（多/空独立） |
-| `Trade` | 回测成交记录 |
-| `BacktestResult` | 回测结果 |
-| `WalkForwardResult` | Walk-Forward 验证结果 |
+| 类 | 关键字段 | 说明 |
+|---|---------|------|
+| `TickData` | last, bid, ask, change24h | 实时行情（change24h 防御空字符串） |
+| `BarData` | open, high, low, close, volume, confirmed | K 线 |
+| `OrderData` | order_id, side, **pos_side**, filled_qty, status | 订单（含双向持仓方向） |
+| `PositionData` | quantity, avg_price, **contract_multiplier** | OKX 持仓（含合约面值） |
+| `Position` | side, quantity, avg_price, **contract_multiplier** | 策略持仓（unrealized_pnl 已乘面值） |
+| `Signal` | action, price, confidence, reason | 策略信号 |
+| `Trade` | entry_price, exit_price, pnl, bars_held | 回测成交记录 |
+| `BacktestResult` | total_return, max_drawdown, sharpe_ratio, trades | 回测结果 |
 
 ---
 
-## 常见问题
+## 11. 诊断与调试
 
-### Q: 模拟盘和实盘价格一样吗？
+### 11.1 下单诊断
 
-K 线和买一卖一**基本一致**（共享真实行情），成交量不同（模拟盘有独立成交）。
+```bash
+python scripts/diagnose_order.py
+```
 
-### Q: 策略信号不受影响吗？
+逐步测试：余额 → 持仓 → 品种规格 → 杠杆 → 模拟下单 → 撤单 → 账户配置 → API Key 权限。
 
-EMA 基于收盘价，差异在 0.01% 以内，**不影响策略信号**。
+### 11.2 常见错误
 
-### Q: Kill Switch 触发后怎么恢复？
+| OKX 错误码 | 含义 | 排查方向 |
+|-----------|------|---------|
+| `1` "All operations failed" | 请求参数错误 | 检查 posSide、instId、tdMode |
+| `51000` "Parameter posSide error" | 双向持仓模式缺 posSide | 确认账户 posMode |
+| `51001` "Instrument ID error" | instId 不存在 | 检查品种是否上市 |
+| `50111` "API Key error" | API Key 无效 | 检查 .env 配置 |
+| `50113` "Signature error" | 签名不匹配 | 检查时间戳、passphrase |
 
-**无法恢复** — 重启程序。这是设计意图，防止暴走策略造成更大损失。
+### 11.3 日志
 
-### Q: 回测账本和实盘账本会混在一起吗？
+```bash
+# 查看最新日志
+tail -f logs/trading_$(date +%Y-%m-%d).log
 
-不会。回测写入 `data/backtest/`，实盘写入 `data/live/`，完全隔离。
+# 搜索错误
+grep "ERROR\|OKX API 错误" logs/trading_*.log
+```
 
-### Q: 如何新增策略？
+---
 
-1. 创建 `strategies/my_strategy.py`
-2. 创建 `configs/my_strategy.yaml`（指定 `strategy: "strategies.my_strategy.MyStrategy"`）
-3. `python run_live.py --config configs/my_strategy.yaml`
+## 12. 审计踩坑记录
+
+经过多轮安全审计，以下是所有已发现并修复的问题。**开发新功能时务必注意这些模式。**
+
+### 🔴 致命级
+
+| 问题 | 正确做法 | 错误做法 |
+|------|---------|---------|
+| OKX 返回空字符串 `""` | `float(data.get("px") or 0)` | `float(data.get("px", 0))` — `""` 走不到默认值 |
+| 合约乘数 | `pnl = diff * qty * contract_multiplier` | `pnl = diff * qty` — BTC 放大 100 倍 |
+| 双向持仓 posSide | `body["posSide"] = "long"` | 不传 posSide → Error [1] |
+| 强平方向判断 | `loss = entry - current`（long）| `loss = abs(current - entry)` — 盈利也被平 |
+| REST 签名 | `sign_path = f"{path}?{urlencode(params)}"` | 只签裸路径 → 401 |
+
+### 🟠 重要级
+
+| 问题 | 正确做法 |
+|------|---------|
+| 科学计数法 | `format(Decimal(...), 'f')` 而非 `str()` |
+| WS 连接失败 | `try/except` 中 `_running = False` |
+| 回撤计算 | 基于高水位 `max(历史权益)` |
+| 部分成交频率 | 5 秒节流，FILLED 立即同步 |
+| Task GC | `pending_tasks.add(task)` + `done_callback(discard)` |
+| 持仓同步 | 启动时查询 + 成交后查询，覆盖式更新 |
+
+### 测试覆盖
+
+```bash
+# 全量测试（281 个，含 32 个审计边界用例）
+python -m pytest tests/ -v --tb=short
+
+# 类型检查
+python -m mypy okx_quant/ --ignore-missing-imports
+```
+
+测试文件说明：
+- `tests/test_audit_edge_cases.py` — 32 个审计发现的边界用例回归测试
+- 覆盖：空字符串解析、科学计数法、合约乘数、强平方向、风控集成、OMS 状态机、REST 签名、WS 安全
