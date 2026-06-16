@@ -41,7 +41,7 @@ from okx_quant.config.auth import OKXAuth
 from okx_quant.config.settings import OKXConfig
 from okx_quant.gateway.rest_client import RESTClient
 from okx_quant.gateway.ws_client import WebSocketClient
-from okx_quant.models.market import BarData, OrderData, OrderStatus
+from okx_quant.models.market import BarData, OKXAPIError, OrderData, OrderStatus
 from okx_quant.oms.order_manager import OrderManager
 from okx_quant.risk.risk_manager import RiskConfig, RiskManager
 from okx_quant.strategy.base import BaseStrategy, Position, StrategyExecutor
@@ -115,9 +115,8 @@ class LiveExecutor(StrategyExecutor):
             future: asyncio.Future[str] = asyncio.get_running_loop().create_future()
             self._pending_futures[request_id] = future
             try:
-                # 在事件循环内同步等待（不会阻塞其他协程）
                 return asyncio.ensure_future(self._wait_for_id(request_id, future))
-            except Exception:
+            except (asyncio.InvalidStateError, RuntimeError):
                 return ""
 
         return ""  # 市价单不需要 order_id
@@ -188,9 +187,15 @@ class LiveExecutor(StrategyExecutor):
                 if future and not future.done():
                     future.set_result(ord_id)
 
-            except Exception as exc:
+            except (OKXAPIError, OSError, asyncio.CancelledError) as exc:
                 logger.error("订单处理错误: %s", exc)
                 # 设置异常给等待的 Future
+                request_id = item.get("request_id", "")
+                future = self._pending_futures.pop(request_id, None)
+                if future and not future.done():
+                    future.set_exception(exc)
+            except Exception as exc:
+                logger.error("订单处理未知错误: %s", exc, exc_info=True)
                 request_id = item.get("request_id", "")
                 future = self._pending_futures.pop(request_id, None)
                 if future and not future.done():

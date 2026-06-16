@@ -188,8 +188,14 @@ class WebSocketClient:
             # Re-subscribe all channels
             await self._resubscribe()
 
-        except Exception as exc:
+        except (websockets.exceptions.InvalidStatusCode,
+                websockets.exceptions.ConnectionClosed,
+                OSError) as exc:
             logger.error("连接失败: %s", exc)
+            self._connected.clear()
+            raise
+        except Exception as exc:
+            logger.error("连接未知错误: %s", exc, exc_info=True)
             self._connected.clear()
             raise
 
@@ -380,8 +386,15 @@ class WebSocketClient:
                     await self._ws.close()
                     # _receive_loop will detect the close and reconnect
 
-            except Exception as exc:
+            except (websockets.exceptions.ConnectionClosed, OSError) as exc:
                 logger.warning("心跳失败: %s", exc)
+                if self._running:
+                    self._connected.clear()
+                    await self._reconnect()
+            except asyncio.CancelledError:
+                return
+            except Exception as exc:
+                logger.warning("心跳未知错误: %s", exc, exc_info=True)
                 if self._running:
                     self._connected.clear()
                     await self._reconnect()

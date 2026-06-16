@@ -21,9 +21,12 @@
 
 from __future__ import annotations
 
+import logging
 import math
 from dataclasses import dataclass, field
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 from okx_quant.models.market import BarData
 from okx_quant.strategy.base import (
@@ -1076,8 +1079,18 @@ class _BacktestExecutor(StrategyExecutor):
         cfg = self._engine.config
         bar_idx = self._strategy.state.bar_index
         exec_bar = cfg.execution_bar(bar_idx)
+        state = self._strategy.state
 
-        # For limit/stop orders, store in pending_orders (checked each bar)
+        # 现货模式校验：不允许裸卖空
+        if not self._contract_mode and side == "sell":
+            has_long = state.position_long is not None and state.position_long.quantity > 0
+            if not has_long:
+                logger.warning(
+                    "现货模式拒绝卖空: 无多仓可平 (bar=%d)", bar_idx
+                )
+                return ""
+
+        # 限价/止损单 → 加入 pending_orders
         if order_type in ("limit", "stop"):
             self._strategy.state.pending_orders.append(PendingOrder(
                 order_id=generate_order_id(),
