@@ -68,6 +68,7 @@ class Position:
     side: str                          # "long" or "short"
     quantity: float = 0.0
     avg_price: float = 0.0
+    contract_multiplier: float = 1.0   # 合约面值（现货=1.0，SWAP 按 ctVal）
     entry_time: int = 0                # Unix ms
     entry_bar: int = 0                 # bar index at entry
     highest_price: float = 0.0         # updated each bar (long)
@@ -76,12 +77,12 @@ class Position:
     funding_paid: float = 0.0          # accumulated funding
 
     def unrealized_pnl(self, current_price: float) -> float:
-        """按市价计算未实现盈亏。"""
+        """按市价计算未实现盈亏（已乘合约面值）。"""
         if self.quantity == 0:
             return 0.0
         if self.side == "long":
-            return (current_price - self.avg_price) * self.quantity
-        return (self.avg_price - current_price) * self.quantity
+            return (current_price - self.avg_price) * self.quantity * self.contract_multiplier
+        return (self.avg_price - current_price) * self.quantity * self.contract_multiplier
 
     def update_extremes(self, high: float, low: float) -> None:
         """追踪最高/最低价格，用于追踪止损。"""
@@ -179,7 +180,6 @@ class BaseStrategy(ABC):
     """
 
     name: str = "base"
-    params: dict[str, Any] = {}
 
     # Injected by engine / live runner
     state: StrategyState
@@ -190,6 +190,7 @@ class BaseStrategy(ABC):
         self.state = StrategyState()
         self.bars = []
         self._executor = None
+        self.params: dict[str, Any] = {}
 
     # ------------------------------------------------------------------
     # Lifecycle hooks (override in subclasses)

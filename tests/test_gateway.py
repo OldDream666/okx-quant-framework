@@ -336,9 +336,10 @@ class TestRESTClient:
 
     @pytest.mark.asyncio
     async def test_get_candles_parsing(self, client: RESTClient):
+        # OKX /market/candles 返回降序（最新在前），代码会 reversed 为升序
         candles_raw = [
-            ["1718448000000", "63000", "63100", "62900", "63050", "100", "0", "0", "1"],
             ["1718451600000", "63050", "63200", "63000", "63150", "200", "0", "0", "0"],
+            ["1718448000000", "63000", "63100", "62900", "63050", "100", "0", "0", "1"],
         ]
         mock_resp = _mock_response("0", candles_raw)
 
@@ -348,8 +349,9 @@ class TestRESTClient:
 
         assert len(bars) == 2
         assert isinstance(bars[0], BarData)
+        # reversed 后升序：bars[0] 是较早的 confirmed bar
         assert bars[0].confirmed is True
-        assert bars[1].confirmed is False
+        assert bars[0].timestamp < bars[1].timestamp
         await client.close()
 
     @pytest.mark.asyncio

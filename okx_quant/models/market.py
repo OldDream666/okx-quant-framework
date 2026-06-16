@@ -57,6 +57,24 @@ class InstrumentType(str, Enum):
 # ---------------------------------------------------------------------------
 
 
+
+def _safe_change24h(data: dict) -> float:
+    """健壮计算 24h 涨跌幅，防御空字符串和除零。"""
+    sod = data.get("sodUtc8", "")
+    try:
+        sod_val = float(sod) if sod else 0.0
+    except (ValueError, TypeError):
+        sod_val = 0.0
+    if sod_val <= 0:
+        return 0.0
+    try:
+        last_val = float(data.get("last", 0))
+    except (ValueError, TypeError):
+        return 0.0
+    if last_val <= 0:
+        return 0.0
+    return (last_val - sod_val) / sod_val
+
 @dataclass(slots=True, frozen=True)
 class TickData:
     """实时行情快照。"""
@@ -82,9 +100,7 @@ class TickData:
             volume24h=float(data.get("vol24h", 0)),
             high24h=float(data.get("high24h", 0)),
             low24h=float(data.get("low24h", 0)),
-            change24h=float(data.get("sodUtc8", 0) and
-                            (float(data["last"]) - float(data["sodUtc8"]))
-                            / float(data["sodUtc8"]) if float(data.get("sodUtc8", 0)) else 0),
+            change24h=_safe_change24h(data),
             timestamp=int(data.get("ts", 0)),
         )
 
@@ -133,6 +149,7 @@ class OrderData:
     client_order_id: str   # OKX clOrdId (client-assigned)
     symbol: str            # instId
     side: OrderSide
+    pos_side: str          # OKX posSide: "long"/"short"/"net"
     order_type: OrderType
     price: float           # limit price (0 for market)
     quantity: float        # original order size
@@ -152,6 +169,7 @@ class OrderData:
             client_order_id=data.get("clOrdId", ""),
             symbol=data["instId"],
             side=OrderSide(data["side"]),
+            pos_side=data.get("posSide", "net"),
             order_type=OrderType(data.get("ordType", "limit")),
             price=float(data.get("px", 0)),
             quantity=float(data.get("sz", 0)),
@@ -180,6 +198,7 @@ class PositionData:
     avg_price: float
     unrealized_pnl: float
     leverage: float
+    contract_multiplier: float   # 合约面值（ctVal）
     margin_mode: str       # "cross" or "isolated"
     liquidation_price: float
     margin: float          # margin occupied
@@ -198,12 +217,13 @@ class PositionData:
             symbol=data["instId"],
             side=side,
             quantity=pos,
-            avg_price=float(data.get("avgPx", 0)),
-            unrealized_pnl=float(data.get("upl", 0)),
-            leverage=float(data.get("lever", 0)),
+            avg_price=float(data.get("avgPx") or 0),
+            unrealized_pnl=float(data.get("upl") or 0),
+            leverage=float(data.get("lever") or 0),
+            contract_multiplier=float(data.get("ctVal") or 1),
             margin_mode=data.get("mgnMode", "cross"),
-            liquidation_price=float(data.get("liqPx", 0)),
-            margin=float(data.get("margin", 0)),
+            liquidation_price=float(data.get("liqPx") or 0),
+            margin=float(data.get("margin") or 0),
             timestamp=int(data.get("cTime", 0)),
         )
 

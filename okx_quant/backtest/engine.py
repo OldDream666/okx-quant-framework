@@ -162,14 +162,19 @@ class ExchangeConfig:
     ) -> bool:
         """检查仓位是否应被强平。
 
-
         简化模型：
-        - 亏损 = |当前价 - 入场价| × 数量 × 乘数。
-        - 当亏损 ≥ 保证金 × maintenance_margin_ratio × leverage 时触发强平。
+        - long 亏损 = entry_price - current_price（价格下跌才亏）
+        - short 亏损 = current_price - entry_price（价格上涨才亏）
+        - 仅当亏损 > 0 时才触发强平检查
         """
         if not self.enable_liquidation or self.leverage <= 1:
             return False
-        loss = abs(current_price - entry_price)
+        if side == "long":
+            loss = entry_price - current_price
+        else:
+            loss = current_price - entry_price
+        if loss <= 0:
+            return False  # 盈利中，不触发强平
         threshold = entry_price * self.maintenance_margin_ratio * self.leverage
         return loss >= threshold
 
@@ -583,6 +588,7 @@ class BacktestEngine:
                     side=pos_side,
                     quantity=qty,
                     avg_price=fill_price,
+                    contract_multiplier=cfg.contract_multiplier,
                     entry_time=timestamp,
                     entry_bar=bar_idx,
                     highest_price=fill_price,
@@ -612,6 +618,7 @@ class BacktestEngine:
                     side=pos_side,
                     quantity=qty,
                     avg_price=fill_price,
+                    contract_multiplier=cfg.contract_multiplier,
                     entry_time=timestamp,
                     entry_bar=bar_idx,
                     highest_price=fill_price,
@@ -656,9 +663,9 @@ class BacktestEngine:
 
         # P&L calculation
         if pos_side == "long":
-            pnl = (fill_price - pos.avg_price) * close_qty
+            pnl = (fill_price - pos.avg_price) * close_qty * pos.contract_multiplier
         else:
-            pnl = (pos.avg_price - fill_price) * close_qty
+            pnl = (pos.avg_price - fill_price) * close_qty * pos.contract_multiplier
 
         pos.realized_pnl += pnl
         pos.quantity -= close_qty
@@ -685,6 +692,7 @@ class BacktestEngine:
                 side=new_side,
                 quantity=remaining,
                 avg_price=fill_price,
+                contract_multiplier=cfg.contract_multiplier,
                 entry_time=timestamp,
                 entry_bar=bar_idx,
                 highest_price=fill_price,
@@ -822,7 +830,7 @@ class BacktestEngine:
             pos = state.position_long if pos_side == "long" else state.position_short
             if pos is None or pos.quantity == 0:
                 continue
-            value = pos.quantity * bar.close
+            value = pos.quantity * bar.close * pos.contract_multiplier
             funding = value * self.config.funding_rate
             if pos_side == "long":
                 funding = -funding  # long pays
@@ -883,6 +891,7 @@ class BacktestEngine:
         bars: list[BarData],
     ) -> BacktestResult:
         """计算汇总指标并构建 BacktestResult。"""
+
         init = self.initial_capital
         total_return = (final_equity - init) / init if init else 0.0
 
@@ -904,8 +913,8 @@ class BacktestEngine:
             if returns:
                 avg_ret = sum(returns) / len(returns)
                 std_ret = (sum((r - avg_ret) ** 2 for r in returns) / len(returns)) ** 0.5
-                # Annualize: assume daily bars → 365
-                bars_per_year = 365.0
+                # Annualize: 根据 K 线间隔动态计算年化系数
+                bars_per_year = BacktestEngine._bars_per_year(bars)
                 sharpe = (avg_ret / std_ret * math.sqrt(bars_per_year)) if std_ret > 0 else 0.0
             else:
                 sharpe = 0.0
@@ -978,6 +987,22 @@ class BacktestEngine:
 # Internal trade tracker (mutable, with close method)
 # ---------------------------------------------------------------------------
 
+
+
+    @staticmethod
+    def _bars_per_year(bars: list[BarData]) -> float:
+        """根据 K 线间隔推断年化系数（bars/年）。"""
+        if len(bars) < 2:
+            return 365.0
+        sample = bars[:min(100, len(bars))]
+        intervals = [sample[i].timestamp - sample[i-1].timestamp for i in range(1, len(sample))]
+        if not intervals:
+            return 365.0
+        avg_ms = sum(intervals) / len(intervals)
+        avg_minutes = avg_ms / 60_000
+        if avg_minutes <= 0:
+            return 365.0
+        return 525_600 / avg_minutes  # 一年 ≈ 525,600 分钟
 
 class _Trade:
     """回测中使用的可变交易跟踪器（不暴露在结果中）。"""

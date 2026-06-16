@@ -145,6 +145,12 @@ class RiskManager(StrategyExecutor):
         # Market price anchor (updated each bar)
         self._last_market_price: float = 0.0
 
+        # Account state (updated by engine each bar via check_account)
+        self._current_equity: float = 0.0
+        self._current_positions: list[Position] | None = None
+        self._current_exposure: float = 0.0
+        self._high_water_mark: float = 0.0  # 回撤高水位追踪
+
         # Violation log
         self._violations: list[RiskEvent] = []
 
@@ -186,7 +192,43 @@ class RiskManager(StrategyExecutor):
         # 4. Order size
         self._check_order_size(quantity, price or self._last_market_price)
 
-        # 5. Forward to inner executor
+        # 5. Exposure check
+        if self._config.max_total_exposure < float("inf"):
+            new_notional = quantity * (price or self._last_market_price)
+            if not self.check_exposure(self._current_exposure, new_notional):
+                event = RiskEvent(
+                    violation=RiskViolation.EXPOSURE_EXCEEDED,
+                    message=(
+                        f"Exposure ${self._current_exposure + new_notional:,.0f} "
+                        f"exceeds max ${self._config.max_total_exposure:,.0f}"
+                    ),
+                    order_side=side, quantity=quantity, price=price or 0,
+                )
+                self._record_violation(event)
+                raise RiskViolationError(event)
+
+        # 6. Leverage check (block new opens only, not closes)
+        if (self._current_equity > 0
+                and self._current_positions is not None
+                and self._last_market_price > 0):
+            is_open = ((side == "buy" and pos_side == "long")
+                       or (side == "sell" and pos_side == "short"))
+            if is_open and not self.check_leverage(
+                self._current_equity, self._current_positions,
+                self._last_market_price,
+            ):
+                event = RiskEvent(
+                    violation=RiskViolation.LEVERAGE_EXCEEDED,
+                    message=(
+                        f"Estimated leverage exceeds max "
+                        f"{self._config.max_account_leverage:.1f}x"
+                    ),
+                    order_side=side, quantity=quantity, price=price or 0,
+                )
+                self._record_violation(event)
+                raise RiskViolationError(event)
+
+        # 7. Forward to inner executor
         try:
             order_id = self._inner.submit(
                 side=side, price=price, quantity=quantity,
@@ -263,10 +305,22 @@ class RiskManager(StrategyExecutor):
             market_price:  当前市价（K 线收盘价）。
         """
         self._last_market_price = market_price
+        self._current_equity = equity
+        self._current_positions = positions
 
-        # Drawdown check
-        if self._config.initial_equity > 0 and self._config.kill_on_drawdown:
-            drawdown = (self._config.initial_equity - equity) / self._config.initial_equity
+        # Update high water mark
+        if equity > self._high_water_mark:
+            self._high_water_mark = equity
+
+        # 基于真实持仓重新计算敞口（覆盖，而非累加）
+        self._current_exposure = sum(
+            abs(p.quantity * market_price) for p in positions if p.quantity != 0
+        )
+
+        # Drawdown check (基于高水位，而非固定初始权益)
+        ref_equity = self._high_water_mark or self._config.initial_equity
+        if ref_equity > 0 and self._config.kill_on_drawdown:
+            drawdown = (ref_equity - equity) / ref_equity
             if drawdown > self._config.max_drawdown_pct:
                 event = RiskEvent(
                     violation=RiskViolation.DRAWDOWN_EXCEEDED,
@@ -280,7 +334,7 @@ class RiskManager(StrategyExecutor):
 
         # Leverage check (informational — blocks new opens via check_leverage)
         total_notional = sum(
-            abs(p.quantity * market_price) for p in positions if p.quantity > 0
+            abs(p.quantity * market_price) for p in positions if p.quantity != 0
         )
         if equity > 0:
             est_leverage = total_notional / equity
@@ -297,7 +351,7 @@ class RiskManager(StrategyExecutor):
             如果安全可开仓返回 ``True``，被阻止返回 ``False``。
         """
         total_notional = sum(
-            abs(p.quantity * market_price) for p in positions if p.quantity > 0
+            abs(p.quantity * market_price) for p in positions if p.quantity != 0
         )
         if equity <= 0:
             return False

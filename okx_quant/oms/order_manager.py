@@ -92,6 +92,7 @@ class OrderManager:
         size: str,
         price: str | None = None,
         client_order_id: str | None = None,
+        pos_side: str | None = None,
         **kwargs: Any,
     ) -> OrderData:
         """通过 REST 下单并开始跟踪。
@@ -119,7 +120,8 @@ class OrderManager:
             kwargs["clOrdId"] = client_order_id
 
         result = await self._rest.place_order(
-            symbol, side, order_type, size, price=price, **kwargs
+            symbol, side, order_type, size, price=price,
+            pos_side=pos_side, **kwargs,
         )
 
         # Build initial OrderData from REST response
@@ -139,6 +141,7 @@ class OrderManager:
             client_order_id=client_order_id or result.get("clOrdId", ""),
             symbol=symbol,
             side=_parse_side(side),
+            pos_side=pos_side or "net",
             order_type=_parse_order_type(order_type),
             price=float(price) if price else 0.0,
             quantity=float(size),
@@ -225,7 +228,10 @@ class OrderManager:
 
             if existing is None:
                 # New order we haven't seen via submit_order (e.g. placed via web UI)
-                self._active[order.order_id] = order
+                if order.status in _TERMINAL_STATES:
+                    self._history[order.order_id] = order
+                else:
+                    self._active[order.order_id] = order
                 to_emit = order
             else:
                 # Merge: take the newer state

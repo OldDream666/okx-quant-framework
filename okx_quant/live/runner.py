@@ -72,6 +72,8 @@ class LiveExecutor(StrategyExecutor):
 
         # order_id 响应通道：request_id → asyncio.Future[str]
         self._pending_futures: dict[str, asyncio.Future[str]] = {}
+        # request_id → 实际 order_id 映射（用于 cancel 时查找）
+        self._request_to_order: dict[str, str] = {}
 
     async def start(self) -> None:
         """启动后台订单处理任务。"""
@@ -96,8 +98,8 @@ class LiveExecutor(StrategyExecutor):
     ) -> str:
         """提交订单到异步队列。
 
-        - 市价单：立即返回空字符串（fire-and-forget）
-        - 限价/止损单：创建 Future 并同步等待 order_id（支持后续撤单）
+        返回 request_id 字符串作为订单句柄，供后续 cancel() 使用。
+        后台任务处理完成后，request_id 会被映射到真实的 OKX order_id。
         """
         request_id = uuid.uuid4().hex[:8]
 
@@ -110,36 +112,20 @@ class LiveExecutor(StrategyExecutor):
             "pos_side": pos_side,
         })
 
-        if order_type in ("limit", "stop"):
-            # 限价/止损单需要 order_id 用于后续撤单
-            future: asyncio.Future[str] = asyncio.get_running_loop().create_future()
-            self._pending_futures[request_id] = future
-            try:
-                return asyncio.ensure_future(self._wait_for_id(request_id, future))
-            except (asyncio.InvalidStateError, RuntimeError):
-                return ""
-
-        return ""  # 市价单不需要 order_id
-
-    async def _wait_for_id(self, request_id: str, future: asyncio.Future[str]) -> str:
-        """等待后台任务返回实际 order_id。"""
-        try:
-            return await asyncio.wait_for(future, timeout=15.0)
-        except asyncio.TimeoutError:
-            logger.error("等待订单 ID 超时: %s", request_id)
-            self._pending_futures.pop(request_id, None)
-            return ""
-        except Exception:
-            self._pending_futures.pop(request_id, None)
-            return ""
+        return request_id
 
     def cancel(self, order_id: str) -> bool:
-        """将撤销请求加入队列。"""
+        """将撤销请求加入队列。
+
+        order_id 可以是 request_id（未处理完的订单）或实际的 OKX order_id。
+        """
         if not order_id:
             return False
+        # 如果是 request_id 且已映射到实际 order_id，直接用实际 order_id
+        real_order_id = self._request_to_order.get(order_id, order_id)
         self._queue.put_nowait({
             "request_id": "cancel",
-            "order_id": order_id,
+            "order_id": real_order_id,
         })
         return True
 
@@ -173,6 +159,7 @@ class LiveExecutor(StrategyExecutor):
                     order_type=item["order_type"],
                     size=str(item["quantity"]),
                     price=str(item["price"]) if item["price"] else None,
+                    pos_side=item.get("pos_side"),
                 )
                 ord_id = result.order_id  # OrderData 属性，非 dict.get()
 
@@ -186,6 +173,9 @@ class LiveExecutor(StrategyExecutor):
                 future = self._pending_futures.pop(request_id, None)
                 if future and not future.done():
                     future.set_result(ord_id)
+
+                # 记录 request_id → order_id 映射
+                self._request_to_order[request_id] = ord_id
 
             except (OKXAPIError, OSError, asyncio.CancelledError) as exc:
                 logger.error("订单处理错误: %s", exc)
@@ -280,8 +270,32 @@ class LiveRunner:
             balance = await self._rest.get_balance()
             logger.info("💰 账户权益: $%.2f", balance.total_equity)
             self._risk_config.initial_equity = balance.total_equity
+            self._strategy.state.cash = balance.total_equity
         except Exception as exc:
             logger.warning("查询余额失败: %s", exc)
+
+        # 2b. 查询现有持仓，初始化策略仓位
+        try:
+            positions = await self._rest.get_positions()
+            for pos in positions:
+                if pos.symbol != self._symbol:
+                    continue
+                strategy_pos = Position(
+                    side=pos.side.value if pos.side.value in ("long", "short") else "long",
+                    quantity=abs(pos.quantity),
+                    avg_price=pos.avg_price,
+                    contract_multiplier=pos.contract_multiplier,
+                )
+                if pos.side.value == "long" or (pos.side.value == "net" and pos.quantity >= 0):
+                    self._strategy.state.position_long = strategy_pos
+                    logger.info("📈 同步多头持仓: %.6f @ %.2f", strategy_pos.quantity, strategy_pos.avg_price)
+                else:
+                    self._strategy.state.position_short = strategy_pos
+                    logger.info("📉 同步空头持仓: %.6f @ %.2f", strategy_pos.quantity, strategy_pos.avg_price)
+            if not positions:
+                logger.info("📭 无现有持仓")
+        except Exception as exc:
+            logger.warning("查询持仓失败: %s", exc)
 
         # 3. 设置杠杆
         if self._leverage > 1:
@@ -295,7 +309,7 @@ class LiveRunner:
         await self._preload_history(self._preload_bars)
 
         # 5. 初始化 OrderManager
-        self._oms = OrderManager(self._rest, None)  # WS 稍后注入
+        self._oms = OrderManager(self._rest, None)
 
         # 6. 初始化执行器
         self._executor = LiveExecutor(self._oms, self._symbol)
@@ -327,6 +341,9 @@ class LiveRunner:
         self._oms._ws = self._ws_private
         logger.info("📡 私有 WS → 订单推送 (%s)",
                      "demo" if self._config.is_demo else "production")
+
+        # 注册订单推送订阅（必须在 WS 注入之后）
+        await self._oms.start(inst_type="SWAP")
 
         # 10. 策略初始化
         self._strategy.on_init(self._strategy_params)
@@ -418,6 +435,8 @@ class LiveRunner:
                 if not batch:
                     break
                 all_bars.extend(batch)
+                # batch 已升序（最旧在前），after 参数含义是"取比它更旧的"
+                # 所以用 batch[0]（本批最旧）作为下一页起点
                 after = int(batch[0].timestamp)
                 remaining -= len(batch)
                 logger.info("  📥 已获取 %d 根 (累计: %d)", len(batch), len(all_bars))
@@ -472,6 +491,19 @@ class LiveRunner:
         # 更新风控参考价
         if self._risk:
             self._risk.update_market_price(bar.close)
+
+        # 调用风控账户检查（敞口/杠杆/回撤/Kill Switch）
+        if self._risk:
+            positions = []
+            equity = self._strategy.state.cash
+            for p in (self._strategy.position_long, self._strategy.position_short):
+                if p and p.quantity > 0:
+                    positions.append(p)
+                    equity += p.unrealized_pnl(bar.close)
+            try:
+                self._risk.check_account(equity, positions, bar.close)
+            except Exception as exc:
+                logger.error("❌ 风控检查错误: %s", exc)
 
         # 分发给策略
         try:
@@ -528,8 +560,12 @@ class LiveRunner:
                 fill_price=order.avg_price,
                 target_price=order.price,
                 quantity=order.filled_qty,
-                pos_side="long" if order.side.value == "buy" else "short",
+                pos_side=order.pos_side,
             )
+
+        # 成交后同步策略持仓（从 OKX 查询真实持仓，避免增量计算误差）
+        if order.status in (OrderStatus.FILLED, OrderStatus.PARTIALLY_FILLED):
+            await self._sync_positions_from_exchange()
 
         # 记录到账本
         if self._ledger is not None and order.status in (
@@ -552,6 +588,35 @@ class LiveRunner:
             except Exception as exc:
                 logger.debug("账本成交写入错误: %s", exc)
 
+    async def _sync_positions_from_exchange(self) -> None:
+        """从 OKX 查询真实持仓并同步到策略。"""
+        if not self._rest:
+            return
+        try:
+            positions = await self._rest.get_positions()
+            self._strategy.state.position_long = None
+            self._strategy.state.position_short = None
+            for pos in positions:
+                if pos.symbol != self._symbol or pos.quantity == 0:
+                    continue
+                strategy_pos = Position(
+                    side=pos.side.value if pos.side.value in ("long", "short") else "long",
+                    quantity=abs(pos.quantity),
+                    avg_price=pos.avg_price,
+                    contract_multiplier=pos.contract_multiplier,
+                )
+                if pos.side.value == "long" or (pos.side.value == "net" and pos.quantity >= 0):
+                    self._strategy.state.position_long = strategy_pos
+                else:
+                    self._strategy.state.position_short = strategy_pos
+            logger.info(
+                "🔄 持仓同步: long=%s short=%s",
+                f"{self._strategy.position_long.quantity:.6f}" if self._strategy.position_long else "无",
+                f"{self._strategy.position_short.quantity:.6f}" if self._strategy.position_short else "无",
+            )
+        except Exception as exc:
+            logger.warning("持仓同步失败: %s", exc)
+
     # ------------------------------------------------------------------
     # Kill Switch 回调
     # ------------------------------------------------------------------
@@ -565,3 +630,22 @@ class LiveRunner:
                 asyncio.ensure_future(
                     self._oms.cancel_order(self._symbol, order.order_id)
                 )
+
+        # 市价平掉所有持仓
+        pos_long = self._strategy.position_long
+        if pos_long and pos_long.quantity > 0:
+            logger.critical("🚨 Kill Switch: 市价平多仓 %.6f", pos_long.quantity)
+            if self._oms:
+                asyncio.ensure_future(self._oms.submit_order(
+                    self._symbol, "sell", "market", str(pos_long.quantity),
+                    pos_side="long",
+                ))
+
+        pos_short = self._strategy.position_short
+        if pos_short and pos_short.quantity > 0:
+            logger.critical("🚨 Kill Switch: 市价平空仓 %.6f", pos_short.quantity)
+            if self._oms:
+                asyncio.ensure_future(self._oms.submit_order(
+                    self._symbol, "buy", "market", str(pos_short.quantity),
+                    pos_side="short",
+                ))

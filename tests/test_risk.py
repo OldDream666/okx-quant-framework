@@ -307,6 +307,8 @@ class TestKillSwitchTriggers:
         callback = MagicMock()
         mgr._on_kill = callback
 
+        # 首次 check_account 设置高水位
+        mgr.check_account(10000.0, [], 100.0)
         # Equity dropped to 7000 → 30% drawdown
         mgr.check_account(7000.0, [], 100.0)
 

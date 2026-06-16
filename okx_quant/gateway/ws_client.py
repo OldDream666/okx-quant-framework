@@ -72,6 +72,8 @@ class WebSocketClient:
         self._ws: Any = None  # websockets client protocol
         self._connected = asyncio.Event()
         self._running = False
+        self._reconnect_lock: asyncio.Lock | None = None  # lazily created
+        self._pending_tasks: set[asyncio.Task[None]] = set()  # 防止 GC 回收
 
         # Background tasks
         self._recv_task: asyncio.Task[None] | None = None
@@ -201,18 +203,24 @@ class WebSocketClient:
 
     async def _reconnect(self) -> None:
         """指数退避重连。"""
-        self._connected.clear()
-        delay = self._RECONNECT_BASE
+        # 防止并发重连：同一时间只有一个协程执行重连
+        if self._reconnect_lock is None:
+            self._reconnect_lock = asyncio.Lock()
+        async with self._reconnect_lock:
+            if self._connected.is_set():
+                return  # 另一个协程已经重连成功
+            self._connected.clear()
+            delay = self._RECONNECT_BASE
 
-        while self._running:
-            logger.info("%.1f 秒后重连...", delay)
-            await asyncio.sleep(delay)
-            try:
-                await self._do_connect()
-                return
-            except Exception as exc:
-                logger.warning("重连失败: %s", exc)
-                delay = min(delay * 2, self._RECONNECT_MAX)
+            while self._running:
+                logger.info("%.1f 秒后重连...", delay)
+                await asyncio.sleep(delay)
+                try:
+                    await self._do_connect()
+                    return
+                except Exception as exc:
+                    logger.warning("重连失败: %s", exc)
+                    delay = min(delay * 2, self._RECONNECT_MAX)
 
     async def _login(self) -> None:
         """在私有 WebSocket channel 上进行认证。
@@ -329,7 +337,9 @@ class WebSocketClient:
             if arg_dict.get("instId") and arg_dict["instId"] != inst_id:
                 continue
             for item in data_list:
-                asyncio.create_task(self._safe_call(callback, channel, item, inst_id))
+                task = asyncio.create_task(self._safe_call(callback, channel, item, inst_id))
+                self._pending_tasks.add(task)
+                task.add_done_callback(self._pending_tasks.discard)
 
     async def _safe_call(
         self, callback: AsyncCallback, channel: str, data: Any, symbol: str = "",
@@ -420,4 +430,6 @@ class WebSocketClient:
                 "op": "subscribe",
                 "args": [{"channel": channel, **arg_dict}],
             })
-            asyncio.create_task(self._ws.send(msg))
+            task = asyncio.create_task(self._ws.send(msg))
+            self._pending_tasks.add(task)
+            task.add_done_callback(self._pending_tasks.discard)

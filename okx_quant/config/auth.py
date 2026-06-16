@@ -80,7 +80,9 @@ class OKXAuth:
 
     @staticmethod
     def _make_timestamp() -> str:
-        """UTC ISO-8601 时间戳，含毫秒（OKX V5 格式）。"""
+        """UTC ISO-8601 时间戳，含毫秒 + Z 后缀（OKX V5 格式）。
+        示例输出: ``2024-01-01T12:00:00.123Z``
+        """
         return datetime.datetime.now(datetime.timezone.utc).strftime(
             "%Y-%m-%dT%H:%M:%S.%f"
         )[:-3] + "Z"

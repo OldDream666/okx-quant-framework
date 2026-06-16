@@ -19,6 +19,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from typing import Any
 
@@ -76,7 +77,7 @@ class RESTClient:
         self._semaphore = asyncio.Semaphore(10)  # max concurrent requests
         self._max_retries = 3
         self._base_delay = 1.0  # seconds, doubles each retry
-        self._inst_specs: dict[str, dict[str, float]] = {}  # symbol → {lotSz, minSz, tickSz}
+        self._inst_specs: dict[str, dict[str, float] | None] = {}  # symbol → {lotSz, minSz, tickSz}
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -133,7 +134,8 @@ class RESTClient:
             "GET", "/api/v5/market/candles",
             params={"instId": symbol, "bar": _okx_bar(bar), "limit": str(limit)},
         )
-        return [BarData.from_okx(c, symbol) for c in data]
+        # OKX 返回降序（最新在前），反转为升序
+        return [BarData.from_okx(c, symbol) for c in reversed(data)]
 
     async def get_history_candles(
         self,
@@ -215,6 +217,7 @@ class RESTClient:
         order_type: str,
         size: str,
         price: str | None = None,
+        pos_side: str | None = None,
         **kwargs: Any,
     ) -> dict[str, Any]:
         """下单。
@@ -228,9 +231,7 @@ class RESTClient:
             order_type: ``market``、``limit``、``post_only``、``fok``、``ioc``。
             size:       订单数量，字符串格式（自动四舍五入）。
             price:      限价，字符串格式（自动四舍五入）。
-
-        返回:
-            下单的原始 OKX 响应数据。
+            pos_side:   持仓方向（``long``/``short``）。双向持仓模式下必填。
         """
         # Auto-fetch instrument specs if not cached
         spec = await self._get_instrument_spec(symbol)
@@ -246,6 +247,8 @@ class RESTClient:
             "ordType": order_type,
             "sz": size,
         }
+        if pos_side:
+            body["posSide"] = pos_side
         if price is not None:
             body["px"] = price
         body.update(kwargs)
@@ -315,11 +318,15 @@ class RESTClient:
         headers: dict[str, str] = {}
         json_body = ""
         if body is not None:
-            import json
             json_body = json.dumps(body)
 
         if signed:
-            headers.update(self._auth.sign(method, path, json_body))
+            # OKX V5 签名要求 requestPath 包含 query string
+            sign_path = path
+            if params:
+                from urllib.parse import urlencode
+                sign_path = f"{path}?{urlencode(params)}"
+            headers.update(self._auth.sign(method, sign_path, json_body))
 
         async with self._semaphore:
             if method == "GET":
@@ -336,6 +343,11 @@ class RESTClient:
 
         code = result.get("code", "0")
         if code != "0":
+            logger.error(
+                "OKX API 错误: code=%s msg=%s | 请求: %s %s | 响应: %s",
+                code, result.get("msg", ""), method, path,
+                json.dumps(result.get("data", []), ensure_ascii=False)[:500],
+            )
             raise OKXAPIError(
                 code=code,
                 message=result.get("msg", ""),
@@ -376,9 +388,12 @@ class RESTClient:
                 if exc.response.status_code == 429:
                     last_exc = exc
                     if attempt < self._max_retries:
-                        retry_after = float(
-                            exc.response.headers.get("Retry-After", delay)
-                        )
+                        try:
+                            retry_after = float(
+                                exc.response.headers.get("Retry-After", delay)
+                            )
+                        except (ValueError, TypeError):
+                            retry_after = delay
                         logger.warning(
                             "Rate limited (429) — retrying in %.1fs", retry_after
                         )
@@ -406,7 +421,14 @@ class RESTClient:
 
         try:
             # Determine instType from symbol suffix
-            inst_type = "SWAP" if symbol.endswith("-SWAP") else "SPOT"
+            if symbol.endswith("-SWAP"):
+                inst_type = "SWAP"
+            elif symbol.endswith("-FUTURES"):
+                inst_type = "FUTURES"
+            elif symbol.endswith("-OPTION"):
+                inst_type = "OPTION"
+            else:
+                inst_type = "SPOT"
             data = await self._request(
                 "GET", "/api/v5/public/instruments",
                 params={"instType": inst_type},
@@ -418,11 +440,12 @@ class RESTClient:
                         "lotSz": float(inst.get("lotSz", "1")),
                         "minSz": float(inst.get("minSz", "1")),
                         "tickSz": float(inst.get("tickSz", "0.01")),
+                        "ctMult": float(inst.get("ctMult", "1") or 1),
                     }
                     self._inst_specs[symbol] = spec
                     return spec
             # Symbol not found — cache empty to avoid repeated lookups
-            self._inst_specs[symbol] = {}
+            self._inst_specs[symbol] = None
             return None
         except Exception as exc:
             logger.warning("获取合约规格失败 %s: %s", symbol, exc)

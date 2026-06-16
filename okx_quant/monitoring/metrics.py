@@ -115,6 +115,8 @@ class MetricsCollector:
         self._returns: list[float] = []
         self._max_returns: int = 1000  # cap memory usage
         self._last_equity: float = initial_equity
+        self._last_timestamp: int = 0
+        self._avg_interval_ms: float = 0.0  # 平均 K 线间隔 (毫秒)
 
     # ------------------------------------------------------------------
     # Recording
@@ -143,6 +145,19 @@ class MetricsCollector:
             timestamp: Unix 毫秒（可选，用于日志记录）。
         """
         self._current_equity = equity
+
+        # 推算 K 线间隔
+        if timestamp > 0 and self._last_timestamp > 0:
+            interval = timestamp - self._last_timestamp
+            if interval > 0:
+                # 指数移动平均
+                alpha = 0.1
+                self._avg_interval_ms = (
+                    alpha * interval + (1 - alpha) * self._avg_interval_ms
+                    if self._avg_interval_ms > 0 else interval
+                )
+        if timestamp > 0:
+            self._last_timestamp = timestamp
 
         # Incremental peak update
         if equity > self._peak_equity:
@@ -181,7 +196,9 @@ class MetricsCollector:
             avg = sum(self._returns) / len(self._returns)
             var = sum((r - avg) ** 2 for r in self._returns) / len(self._returns)
             std = math.sqrt(var)
-            sharpe = (avg / std * math.sqrt(365)) if std > 0 else 0.0
+            # 动态年化：根据记录的收益率间隔推断
+            bars_per_year = self._estimate_bars_per_year()
+            sharpe = (avg / std * math.sqrt(bars_per_year)) if std > 0 else 0.0
 
         return TradeMetrics(
             total_trades=self._total_trades,
@@ -208,6 +225,14 @@ class MetricsCollector:
         """重置所有计数器。"""
         eq = initial_equity if initial_equity is not None else self._initial_equity
         self.__init__(initial_equity=eq)  # type: ignore[misc]
+
+    def _estimate_bars_per_year(self) -> float:
+        """根据 record_equity 的时间间隔推算年化系数。"""
+        if self._avg_interval_ms > 0:
+            avg_minutes = self._avg_interval_ms / 60_000
+            if avg_minutes > 0:
+                return 525_600 / avg_minutes  # 一年 ≈ 525,600 分钟
+        return 365.0  # fallback: 日线默认
 
 
 # ---------------------------------------------------------------------------
