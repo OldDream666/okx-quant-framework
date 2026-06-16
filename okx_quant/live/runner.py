@@ -295,7 +295,6 @@ class LiveRunner:
 
         # 5. 初始化 OrderManager
         self._oms = OrderManager(self._rest, None)  # WS 稍后注入
-        await self._oms.start(inst_type="SWAP")
 
         # 6. 初始化执行器
         self._executor = LiveExecutor(self._oms, self._symbol)
