@@ -383,7 +383,7 @@ class RiskManager(StrategyExecutor):
         if self._last_market_price <= 0:
             return  # no reference price yet — allow
         deviation = abs(price - self._last_market_price) / self._last_market_price
-        if deviation > self._config.max_price_deviation:
+        if deviation > self._config.max_price_deviation + 1e-8:
             event = RiskEvent(
                 violation=RiskViolation.FAT_FINGER,
                 message=(

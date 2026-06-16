@@ -252,6 +252,7 @@ class LiveRunner:
 
         # K 线跟踪
         self._last_bar_ts: int = 0
+        self._processed_bars: set[int] = set()  # 防止并发重复处理
         self._bar_count: int = 0
 
         # 状态
@@ -446,6 +447,11 @@ class LiveRunner:
 
         if bar.timestamp <= self._last_bar_ts:
             return  # 已处理
+
+        # 并发防重：如果另一个协程正在处理同一根 bar，跳过
+        if bar.timestamp in self._processed_bars:
+            return
+        self._processed_bars.add(bar.timestamp)
 
         # 新的闭合 K 线
         self._last_bar_ts = bar.timestamp
