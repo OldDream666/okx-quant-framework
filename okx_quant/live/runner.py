@@ -227,7 +227,7 @@ class AsyncLiveExecutor:
                     ord_id = result.get("ordId", "")
                     self._results[item["request_id"]] = ord_id
                     logger.info(
-                        logger.info("已下单: %s %s %s 数量=%s → ordId=%s",
+                        "已下单: %s %s %s 数量=%s → ordId=%s",
                         item["side"], item["order_type"], self._symbol,
                         item["quantity"], ord_id,
                     )
