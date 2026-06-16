@@ -118,7 +118,7 @@ class LiveExecutor(StrategyExecutor):
             self._oms_order_id = order.get("ordId", "")
             return self._oms_order_id
         except Exception as exc:
-            logger.error("Order submission failed: %s", exc)
+            logger.error("下单失败: %s", exc)
             return ""
 
     def cancel(self, order_id: str) -> bool:
@@ -227,12 +227,12 @@ class AsyncLiveExecutor:
                     ord_id = result.get("ordId", "")
                     self._results[item["request_id"]] = ord_id
                     logger.info(
-                        "Order placed: %s %s %s qty=%s → ordId=%s",
+                        logger.info("已下单: %s %s %s 数量=%s → ordId=%s",
                         item["side"], item["order_type"], self._symbol,
                         item["quantity"], ord_id,
                     )
             except Exception as exc:
-                logger.error("Order processing error: %s", exc)
+                logger.error("订单处理错误: %s", exc)
 
 
 # ---------------------------------------------------------------------------
@@ -309,31 +309,31 @@ class LiveRunner:
     async def start(self) -> None:
         """启动实盘运行器 —— 连接 OKX 并开始交易。"""
         logger.info("="*60)
-        logger.info("  LiveRunner starting")
-        logger.info("  Symbol: %s | Timeframe: %s | Demo: %s",
+        logger.info("  LiveRunner 启动中")
+        logger.info("  交易对: %s | 周期: %s | 模拟盘: %s",
                      self._symbol, self._timeframe, self._config.is_demo)
         logger.info("="*60)
 
         # 1. Initialize REST client
         self._rest = RESTClient(self._config, self._auth)
         await self._rest.connect()
-        logger.info("✅ REST client connected")
+        logger.info("✅ REST 客户端已连接")
 
         # 2. Fetch initial account state
         try:
             balance = await self._rest.get_balance()
-            logger.info("💰 Account equity: $%.2f", balance.total_equity)
+            logger.info("💰 账户权益: $%.2f", balance.total_equity)
             self._risk_config.initial_equity = balance.total_equity
         except Exception as exc:
-            logger.warning("Could not fetch balance: %s", exc)
+            logger.warning("查询余额失败: %s", exc)
 
         # 2b. Set leverage
         if self._leverage > 1:
             try:
                 result = await self._rest.set_leverage(self._symbol, self._leverage)
-                logger.info("⚙️ Leverage set to %dx for %s", self._leverage, self._symbol)
+                logger.info("⚙️ 杠杆已设置为 %dx (%s)", self._leverage, self._symbol)
             except Exception as exc:
-                logger.warning("Could not set leverage: %s", exc)
+                logger.warning("设置杠杆失败: %s", exc)
 
         # 3. Pre-load historical K-line data for strategy warm-up
         await self._preload_history()
@@ -348,7 +348,7 @@ class LiveRunner:
         # 5. Initialize RiskManager
         self._risk = RiskManager(self._risk_config, self._executor)
         self._risk._on_kill = self._on_kill_switch
-        logger.info("🛡️ RiskManager configured")
+        logger.info("🛡️ 风控管理器已配置")
 
         # 6. Inject executor into strategy
         self._strategy._executor = self._risk
@@ -372,19 +372,19 @@ class LiveRunner:
         self._ws_public.subscribe_candles(
             self._symbol, self._timeframe, self._on_candle
         )
-        logger.info("📡 Public WS → %s candle%s (production endpoint)",
+        logger.info("📡 公共 WS → %s %s K线（生产端点）",
                      self._symbol, _okx_bar(self._timeframe))
         # Private WS: use demo endpoint for demo, production for real
         self._ws_private = WebSocketClient(self._config.ws_private, auth=self._auth)
         self._ws_private.subscribe_orders(self._on_order_update)
         self._oms._ws = self._ws_private  # type: ignore[attr-defined]
-        logger.info("📡 Private WS → order updates (%s)",
+        logger.info("📡 私有 WS → 订单推送 (%s)",
                      "demo" if self._config.is_demo else "production")
 
         # 10. Strategy init + start
         self._strategy.on_init(self._strategy_params)
         self._strategy.on_start()
-        logger.info("🚀 Strategy '%s' initialized", self._strategy.name)
+        logger.info("🚀 策略 '%s' 已初始化", self._strategy.name)
 
         # 11. Register signal handlers
         loop = asyncio.get_event_loop()
@@ -394,8 +394,8 @@ class LiveRunner:
         # 12. Connect both WebSockets
         self._running = True
         logger.info("="*60)
-        logger.info("  ✅ LiveRunner is LIVE — connecting WebSockets...")
-        logger.info("  Press Ctrl+C to stop")
+        logger.info("  ✅ LiveRunner 已启动 — 正在连接 WebSocket...")
+        logger.info("  按 Ctrl+C 停止")
         logger.info("="*60)
 
         await self._ws_public.connect()
@@ -416,14 +416,14 @@ class LiveRunner:
             return
         self._running = False
 
-        logger.info("\n🛑 Shutting down...")
+        logger.info("\n🛑 正在关闭...")
 
         # 1. Strategy cleanup
         try:
             self._strategy.on_stop()
-            logger.info("  ✅ strategy.on_stop() called")
+            logger.info("  ✅ 策略 on_stop() 已调用")
         except Exception as exc:
-            logger.error("  ❌ on_stop error: %s", exc)
+            logger.error("  ❌ on_stop 错误: %s", exc)
 
         # 2. Cancel all pending orders
         if self._oms:
@@ -431,9 +431,9 @@ class LiveRunner:
             for order in active:
                 try:
                     await self._oms.cancel_order(self._symbol, order.order_id)
-                    logger.info("  🗑️ Cancelled order %s", order.order_id)
+                    logger.info("  🗑️ 已撤销订单 %s", order.order_id)
                 except Exception as exc:
-                    logger.error("  ❌ Cancel failed for %s: %s", order.order_id, exc)
+                    logger.error("  ❌ 撤单失败 %s: %s", order.order_id, exc)
 
         # 3. Stop executor
         if self._executor:
@@ -447,7 +447,7 @@ class LiveRunner:
         if self._rest:
             await self._rest.close()
 
-        logger.info("  ✅ Shutdown complete")
+        logger.info("  ✅ 关闭完成")
 
     # ------------------------------------------------------------------
     # Historical data preload
@@ -463,7 +463,7 @@ class LiveRunner:
         """
         from okx_quant.gateway.rest_client import _okx_bar
 
-        logger.info("📥 Pre-loading %d historical %s candles for %s...",
+        logger.info("📥 正在预加载 %d 根历史 %s K线 (%s)...",
                      count, self._timeframe, self._symbol)
 
         try:
@@ -481,7 +481,7 @@ class LiveRunner:
                 all_bars.extend(batch)
                 after = int(batch[0].timestamp)
                 remaining -= len(batch)
-                logger.info("  📥 Fetched %d bars (total: %d)", len(batch), len(all_bars))
+                logger.info("  📥 已获取 %d 根 (累计: %d)", len(batch), len(all_bars))
 
             # Sort chronologically and fill strategy bars
             all_bars.sort(key=lambda b: b.timestamp)
@@ -490,13 +490,13 @@ class LiveRunner:
             if all_bars:
                 self._last_bar_ts = all_bars[-1].timestamp
 
-            logger.info("✅ Pre-loaded %d candles (oldest: %s, newest: %s)",
+            logger.info("✅ 已预加载 %d 根 K线 (最早: %s, 最新: %s)",
                          len(all_bars),
                          all_bars[0].timestamp if all_bars else "N/A",
                          all_bars[-1].timestamp if all_bars else "N/A")
 
         except Exception as exc:
-            logger.warning("⚠️ Could not pre-load history: %s — will warm up from live data", exc)
+            logger.warning("⚠️ 预加载失败: %s — 将从实时数据预热", exc)
 
     # ------------------------------------------------------------------
     # K-line callback
@@ -549,7 +549,7 @@ class LiveRunner:
                     signal.action, signal.confidence, signal.reason,
                 )
         except Exception as exc:
-            logger.error("❌ Strategy error: %s", exc)
+            logger.error("❌ 策略错误: %s", exc)
 
         # Record equity to ledger
         if self._ledger is not None:
@@ -574,7 +574,7 @@ class LiveRunner:
             try:
                 self._bar_callback(bar)
             except Exception as exc:
-                logger.error("❌ Bar callback error: %s", exc)
+                logger.error("❌ K线回调错误: %s", exc)
 
     # ------------------------------------------------------------------
     # Order update callback
@@ -615,7 +615,7 @@ class LiveRunner:
 
     def _on_kill_switch(self) -> None:
         """RiskManager 激活 Kill Switch 时调用。"""
-        logger.critical("🚨 KILL SWITCH ACTIVATED — cancelling all orders")
+        logger.critical("🚨 KILL SWITCH 已触发 — 正在撤销所有订单")
         if self._oms:
             active = self._oms.get_active_orders(self._symbol)
             for order in active:

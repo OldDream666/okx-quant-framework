@@ -168,7 +168,7 @@ class WebSocketClient:
 
     async def _do_connect(self) -> None:
         """单次连接尝试。"""
-        logger.info("Connecting to %s", self._url)
+        logger.info("正在连接 %s", self._url)
         try:
             self._ws = await websockets.connect(
                 self._url,
@@ -179,7 +179,7 @@ class WebSocketClient:
             )
             self._last_pong = time.monotonic()
             self._connected.set()
-            logger.info("Connected to %s", self._url)
+            logger.info("已连接 %s", self._url)
 
             # Login for private channels
             if self._auth is not None:
@@ -189,7 +189,7 @@ class WebSocketClient:
             await self._resubscribe()
 
         except Exception as exc:
-            logger.error("Connection failed: %s", exc)
+            logger.error("连接失败: %s", exc)
             self._connected.clear()
             raise
 
@@ -199,13 +199,13 @@ class WebSocketClient:
         delay = self._RECONNECT_BASE
 
         while self._running:
-            logger.info("Reconnecting in %.1fs...", delay)
+            logger.info("%.1f 秒后重连...", delay)
             await asyncio.sleep(delay)
             try:
                 await self._do_connect()
                 return
             except Exception as exc:
-                logger.warning("Reconnect failed: %s", exc)
+                logger.warning("重连失败: %s", exc)
                 delay = min(delay * 2, self._RECONNECT_MAX)
 
     async def _login(self) -> None:
@@ -235,9 +235,9 @@ class WebSocketClient:
         resp_raw = await asyncio.wait_for(self._ws.recv(), timeout=10)
         resp = json.loads(resp_raw)
         if resp.get("event") == "login":
-            logger.info("WebSocket login successful")
+            logger.info("WebSocket 登录成功")
         else:
-            logger.error("WebSocket login failed: %s", resp)
+            logger.error("WebSocket 登录失败: %s", resp)
             raise OKXConnectionError(f"Login failed: {resp}")
 
     async def _resubscribe(self) -> None:
@@ -251,7 +251,7 @@ class WebSocketClient:
         if args:
             msg = json.dumps({"op": "subscribe", "args": args})
             await self._ws.send(msg)
-            logger.info("Re-subscribed to %d channel(s)", len(args))
+            logger.info("已重新订阅 %d 个频道", len(args))
 
     # ------------------------------------------------------------------
     # Internal: receive loop
@@ -272,7 +272,7 @@ class WebSocketClient:
 
                 self._dispatch(json.loads(raw))
             except websockets.exceptions.ConnectionClosed as exc:
-                logger.warning("WebSocket closed: %s", exc)
+                logger.warning("WebSocket 已关闭: %s", exc)
                 self._connected.clear()
                 if self._running:
                     await self._reconnect()
@@ -283,7 +283,7 @@ class WebSocketClient:
                 self._last_pong = time.monotonic()
                 continue
             except Exception as exc:
-                logger.error("Receive error: %s", exc)
+                logger.error("接收错误: %s", exc)
                 if self._running:
                     await asyncio.sleep(1)
 
@@ -334,7 +334,7 @@ class WebSocketClient:
             parsed = self._parse_push(channel, data, symbol)
             await callback(parsed)
         except Exception as exc:
-            logger.error("Callback error for channel %s: %s", channel, exc)
+            logger.error("频道 %s 回调错误: %s", channel, exc)
 
     @staticmethod
     def _parse_push(channel: str, data: Any, symbol: str = "") -> Any:
@@ -375,13 +375,13 @@ class WebSocketClient:
                 elapsed = time.monotonic() - self._last_pong
                 if elapsed > self._PING_INTERVAL + self._PONG_TIMEOUT:
                     logger.warning(
-                        "No pong received in %.1fs — forcing reconnect", elapsed
+                        "%.1f 秒未收到 pong — 强制重连", elapsed
                     )
                     await self._ws.close()
                     # _receive_loop will detect the close and reconnect
 
             except Exception as exc:
-                logger.warning("Ping failed: %s", exc)
+                logger.warning("心跳失败: %s", exc)
                 if self._running:
                     self._connected.clear()
                     await self._reconnect()

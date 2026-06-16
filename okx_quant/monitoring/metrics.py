@@ -245,7 +245,7 @@ class HeartbeatMonitor:
         """记录心跳 — 每次收到行情数据时调用。"""
         self._last_tick = time.monotonic()
         if self._is_stale:
-            logger.info("Heartbeat recovered after %d stale checks", self._stale_count)
+            logger.info("心跳恢复，共 %d 次过期检测", self._stale_count)
         self._is_stale = False
         self._stale_count = 0
 
@@ -353,7 +353,7 @@ class Alerter:
             return
         self._running = True
         self._task = asyncio.create_task(self._delivery_loop())
-        logger.info("Alerter started — webhooks: feishu={}, telegram={}",
+        logger.info("报警器已启动 — webhooks: 飞书={}, Telegram={}",
                      bool(self._config.feishu_webhook),
                      bool(self._config.telegram_webhook))
 
@@ -450,13 +450,13 @@ class Alerter:
             try:
                 self._config.on_alert(level, message)
             except Exception as exc:
-                logger.error("Alert callback error: {}", exc)
+                logger.error("报警回调错误: {}", exc)
 
         # Async webhook queue (non-blocking put)
         try:
             self._queue.put_nowait((level, message))
         except asyncio.QueueFull:
-            logger.warning("Alert queue full — dropping alert: {}", message)
+            logger.warning("报警队列已满 — 丢弃报警: {}", message)
 
     # ------------------------------------------------------------------
     # Async delivery loop
@@ -522,8 +522,8 @@ class Alerter:
                     logger.debug("Webhook {} sent OK (status={})", name, resp.status_code)
                     return True
                 else:
-                    logger.warning("Webhook {} returned status {}", name, resp.status_code)
+                    logger.warning("Webhook {} 返回状态 {}", name, resp.status_code)
                     return False
         except Exception as exc:
-            logger.error("Webhook {} failed: {}", name, exc)
+            logger.error("Webhook {} 失败: {}", name, exc)
             return False

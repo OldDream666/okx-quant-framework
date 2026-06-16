@@ -332,12 +332,12 @@ class RiskManager(StrategyExecutor):
         if self._killed:
             return  # already killed
         self._killed = True
-        logger.critical("KILL SWITCH ACTIVATED — all trading halted permanently")
+        logger.critical("KILL SWITCH 已触发 — 所有交易永久停止")
         if self._on_kill is not None:
             try:
                 self._on_kill()
             except Exception as exc:
-                logger.error("Kill callback error: %s", exc)
+                logger.error("Kill Switch 回调错误: %s", exc)
 
     @property
     def is_killed(self) -> bool:
@@ -428,4 +428,4 @@ class RiskManager(StrategyExecutor):
     def _record_violation(self, event: RiskEvent) -> None:
         """记录并存储风控违规。"""
         self._violations.append(event)
-        logger.warning("RISK VIOLATION [%s]: %s", event.violation.value, event.message)
+        logger.warning("风控违规 [%s]: %s", event.violation.value, event.message)

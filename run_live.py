@@ -82,7 +82,7 @@ def main():
     args = parse_args()
 
     # ── 1. Load YAML config ──
-    print(f"📋 Loading config: {args.config}")
+    print(f"📋 加载配置: {args.config}")
     cfg = load_yaml(args.config)
 
     # ── 2. Command-line overrides ──
@@ -105,14 +105,14 @@ def main():
     # ── 5. Load strategy dynamically ──
     strategy_class_path = cfg.get("strategy", "")
     if not strategy_class_path:
-        print("❌ Error: 'strategy' not specified in config")
+        print("❌ 错误: 配置文件中未指定 strategy")
         sys.exit(1)
 
     strategy_class = load_strategy(strategy_class_path)
     strategy = strategy_class()
     strategy_params = cfg.get("strategy_params", {})
 
-    print(f"📊 Strategy: {strategy_class.__name__} ({strategy.name})")
+    print(f"📊 策略: {strategy_class.__name__} ({strategy.name})")
 
     # ── 6. Build risk config ──
     risk_cfg = cfg.get("risk", {})
@@ -141,7 +141,7 @@ def main():
 
     # ── 8. Dry run or live ──
     if args.dry_run:
-        print("🏁 Dry run complete — no trading.")
+        print("🏁 验证完成 — 未启动交易。")
         return
 
     # ── 9. Create and start LiveRunner ──

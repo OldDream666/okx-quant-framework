@@ -70,7 +70,7 @@ class OrderManager:
     async def start(self, inst_type: str = "SPOT") -> None:
         """订阅 OKX 订单通道并开始跟踪。"""
         self._ws.subscribe_orders(self._on_ws_order_update, inst_type=inst_type)
-        logger.info("OrderManager started — subscribed to orders (%s)", inst_type)
+        logger.info("订单管理器已启动 — 订阅订单频道 (%s)", inst_type)
 
     async def stop(self) -> None:
         """清除所有跟踪的订单和处理器。"""
@@ -78,7 +78,7 @@ class OrderManager:
             self._active.clear()
             self._history.clear()
             self._clord_map.clear()
-        logger.info("OrderManager stopped")
+        logger.info("订单管理器已停止")
 
     # ------------------------------------------------------------------
     # Order operations
@@ -170,10 +170,10 @@ class OrderManager:
         """
         try:
             await self._rest.cancel_order(symbol, order_id)
-            logger.info("Cancel requested: %s %s", symbol, order_id)
+            logger.info("撤单请求: %s %s", symbol, order_id)
             return True
         except OKXAPIError as exc:
-            logger.warning("Cancel failed for %s: %s", order_id, exc)
+            logger.warning("撤单失败 %s: %s", order_id, exc)
             return False
 
     # ------------------------------------------------------------------

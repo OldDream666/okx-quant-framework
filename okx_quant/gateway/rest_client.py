@@ -425,7 +425,7 @@ class RESTClient:
             self._inst_specs[symbol] = {}
             return None
         except Exception as exc:
-            logger.warning("Could not fetch instrument spec for %s: %s", symbol, exc)
+            logger.warning("获取合约规格失败 %s: %s", symbol, exc)
             return None
 
     @staticmethod
