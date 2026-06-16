@@ -243,6 +243,7 @@ class LiveRunner:
         # K 线跟踪
         self._last_bar_ts: int = 0
         self._processed_bars: set[int] = set()  # 防止并发重复处理
+        self._last_sync_time: float = 0.0  # 持仓同步节流
         self._bar_count: int = 0
 
         # 状态
@@ -476,6 +477,10 @@ class LiveRunner:
         self._last_bar_ts = bar.timestamp
         self._bar_count += 1
 
+        # 定期清理已处理 K 线集合，防止内存泄漏
+        if len(self._processed_bars) > 10000:
+            self._processed_bars = {bar.timestamp}
+
         logger.info(
             "📊 Bar #%d closed: %s O=%.2f H=%.2f L=%.2f C=%.2f",
             self._bar_count, self._symbol,
@@ -564,8 +569,14 @@ class LiveRunner:
             )
 
         # 成交后同步策略持仓（从 OKX 查询真实持仓，避免增量计算误差）
-        if order.status in (OrderStatus.FILLED, OrderStatus.PARTIALLY_FILLED):
+        if order.status == OrderStatus.FILLED:
             await self._sync_positions_from_exchange()
+        elif order.status == OrderStatus.PARTIALLY_FILLED:
+            # 节流：部分成交频繁，避免触发 OKX 频率限制
+            now = time.monotonic()
+            if now - self._last_sync_time > 5.0:  # 最多 5 秒同步一次
+                await self._sync_positions_from_exchange()
+                self._last_sync_time = now
 
         # 记录到账本
         if self._ledger is not None and order.status in (

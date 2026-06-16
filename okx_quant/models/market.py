@@ -171,15 +171,15 @@ class OrderData:
             side=OrderSide(data["side"]),
             pos_side=data.get("posSide", "net"),
             order_type=OrderType(data.get("ordType", "limit")),
-            price=float(data.get("px", 0)),
-            quantity=float(data.get("sz", 0)),
-            filled_qty=float(data.get("accFillSz", 0)),
-            avg_price=float(data.get("avgPx", 0)),
+            price=float(data.get("px") or 0),
+            quantity=float(data.get("sz") or 0),
+            filled_qty=float(data.get("accFillSz") or 0),
+            avg_price=float(data.get("avgPx") or 0),
             status=OrderStatus(data.get("state", "live")),
-            fee=float(data.get("fee", 0)),
+            fee=float(data.get("fee") or 0),
             fee_currency=data.get("feeCcy", ""),
-            timestamp=int(data.get("cTime", 0)),
-            update_time=int(data.get("uTime", 0)),
+            timestamp=int(data.get("cTime") or 0),
+            update_time=int(data.get("uTime") or 0),
         )
 
 

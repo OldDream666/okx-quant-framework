@@ -136,7 +136,11 @@ class WebSocketClient:
         if self._running:
             return
         self._running = True
-        await self._do_connect()
+        try:
+            await self._do_connect()
+        except Exception:
+            self._running = False
+            raise
         self._recv_task = asyncio.create_task(self._receive_loop())
         self._ping_task = asyncio.create_task(self._heartbeat_loop())
 

@@ -454,7 +454,6 @@ class RESTClient:
     @staticmethod
     def _round_to_lot(value: float, lot_size: float, min_size: float) -> str:
         """将数量四舍五入到品种的 lot_size 精度。
-
         如果四舍五入后的值低于 min_size，返回 min_size 字符串。
         """
         from decimal import Decimal, ROUND_DOWN
@@ -465,12 +464,9 @@ class RESTClient:
         ))
         if rounded < min_size:
             rounded = min_size
-        # Format to match lot_size decimal places
-        lot_str = str(lot_size)
-        if "." in lot_str:
-            decimals = len(lot_str.split(".")[1].rstrip("0"))
-            return f"{rounded:.{decimals}f}"
-        return str(int(rounded))
+        # 用 Decimal 格式化，避免科学计数法
+        lot_dec = Decimal(str(lot_size))
+        return format(Decimal(str(rounded)).quantize(lot_dec), 'f')
 
     @staticmethod
     def _round_to_tick(price: float, tick_size: float) -> str:
