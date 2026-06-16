@@ -94,7 +94,7 @@ class TickData:
         """从 OKX ``/api/v5/market/ticker`` 响应项解析。"""
         return cls(
             symbol=data["instId"],
-            last=float(data["last"]),
+            last=float(data.get("last") or 0),
             bid=float(data.get("bidPx", 0)),
             ask=float(data.get("askPx", 0)),
             volume24h=float(data.get("vol24h", 0)),
@@ -207,7 +207,7 @@ class PositionData:
     @classmethod
     def from_okx(cls, data: dict[str, Any]) -> PositionData:
         """从 OKX ``/api/v5/account/positions`` 响应项解析。"""
-        pos = float(data.get("pos", 0))
+        pos = float(data.get("pos") or 0)
         side_str = data.get("posSide", "net")
         if side_str == "net":
             side = PositionSide.LONG if pos >= 0 else PositionSide.SHORT
@@ -224,7 +224,7 @@ class PositionData:
             margin_mode=data.get("mgnMode", "cross"),
             liquidation_price=float(data.get("liqPx") or 0),
             margin=float(data.get("margin") or 0),
-            timestamp=int(data.get("cTime", 0)),
+            timestamp=int(data.get("cTime") or 0),
         )
 
 

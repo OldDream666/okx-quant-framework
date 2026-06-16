@@ -46,6 +46,8 @@ okx_quant/
 strategies/           # 📝 用户策略
 configs/              # ⚙️ YAML 配置文件
 run_live.py           # 🏃 通用启动脚本
+scripts/              # 🔧 诊断脚本
+data/                 # 💾 交易账本（自动创建）
 ```
 
 ---

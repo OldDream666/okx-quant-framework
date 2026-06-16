@@ -498,7 +498,7 @@ from okx_quant.monitoring.metrics import MetricsCollector, Alerter, HeartbeatMon
 | `Position` | 策略持仓（多/空独立） |
 | `Trade` | 回测成交记录 |
 | `BacktestResult` | 回测结果 |
-| `WalkForwardResult` | WF 验证结果 |
+| `WalkForwardResult` | Walk-Forward 验证结果 |
 
 ---
 

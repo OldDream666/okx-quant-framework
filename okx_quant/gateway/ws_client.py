@@ -194,7 +194,7 @@ class WebSocketClient:
             # Re-subscribe all channels
             await self._resubscribe()
 
-        except (websockets.exceptions.InvalidStatusCode,
+        except (websockets.exceptions.InvalidStatus,
                 websockets.exceptions.ConnectionClosed,
                 OSError) as exc:
             logger.error("连接失败: %s", exc)
