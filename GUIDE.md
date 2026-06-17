@@ -53,7 +53,7 @@ OKX_IS_DEMO=true
 
 ```bash
 pytest tests/ -v
-# 预期：281 passed
+# 预期：291 passed
 ```
 
 ### 1.4 诊断下单
@@ -708,4 +708,5 @@ python -m mypy okx_quant/ --ignore-missing-imports
 
 测试文件说明：
 - `tests/test_audit_edge_cases.py` — 32 个审计发现的边界用例回归测试
+- `tests/test_live_integration.py` — LiveRunner 端到端集成测试（策略→风控→执行器→OMS）
 - 覆盖：空字符串解析、科学计数法、合约乘数、强平方向、风控集成、OMS 状态机、REST 签名、WS 安全

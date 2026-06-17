@@ -6,7 +6,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/Python-3.10+-blue?logo=python&logoColor=white" alt="Python">
-  <img src="https://img.shields.io/badge/Tests-249%20passed-brightgreen" alt="Tests">
+  <img src="https://img.shields.io/badge/Tests-291%20passed-brightgreen" alt="Tests">
   <img src="https://img.shields.io/badge/License-MIT-yellow" alt="License">
   <img src="https://img.shields.io/badge/OKX-V5%20API-orange" alt="OKX">
   <img src="https://img.shields.io/badge/async-asyncio-purple" alt="Async">
@@ -83,7 +83,7 @@ OKX_IS_DEMO=true
 
 ```bash
 pytest tests/ -v
-# ✅ 249 passed in 2s
+# ✅ 291 passed in 5s
 ```
 
 ---
@@ -299,12 +299,13 @@ tests/test_config_auth.py      31 passed   # 配置 & 签名
 tests/test_gateway.py          40 passed   # REST + WebSocket
 tests/test_oms.py              20 passed   # 订单管理
 tests/test_strategy.py         56 passed   # 策略 + 回测 + Walk-Forward
-tests/test_integration.py      13 passed   # 全链路集成
+tests/test_integration.py      13 passed   # 回测全链路集成
+tests/test_live_integration.py 10 passed   # LiveRunner 端到端
 tests/test_risk.py             35 passed   # 风控
 tests/test_monitoring.py       38 passed   # 日志 + 指标 + 报警
 tests/test_ledger.py           16 passed   # 交易账本
 ─────────────────────────────────────────
-Total                         249 passed
+Total                         291 passed
 ```
 
 ---
