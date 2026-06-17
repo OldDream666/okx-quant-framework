@@ -13,11 +13,11 @@ leverage: 20                  # 杠杆倍数 (1-125)
 strategy: "strategies.macro_ema.MacroEmaStrategy"   # 策略类路径 (module.ClassName)
 
 strategy_params:
-  fast_period: 15             # 快线 EMA 周期
+  fast_period: 10             # 快线 EMA 周期
   slow_period: 40             # 慢线 EMA 周期
   macro_period: 800           # 宏观 EMA 周期 (0=禁用)
-  stop_loss_pct: 0.05         # 止损幅度 (5%)
-  position_pct: 0.025         # 每笔仓位占总资金比例 (2.5%)
+  stop_loss_pct: 0.08         # 止损幅度 (8%)
+  position_pct: 0.5           # 每笔仓位占总资金比例 (50%)
 
 # --- 风控 ---
 risk:

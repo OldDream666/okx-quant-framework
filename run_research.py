@@ -142,7 +142,7 @@ def run_baseline(bars: list[BarData]):
         "slow_period": 40, 
         "macro_period": 800,
         "stop_loss_pct": 0.05,
-        "position_pct": 0.025
+        "position_pct": 0.5
     })
     
     result = engine.run(strategy, bars, contract_mode=True)
@@ -184,7 +184,7 @@ def run_grid_search(bars: list[BarData]) -> dict:
             "slow_period": slow,
             "macro_period": 800, # 宏观滤网保持不动
             "stop_loss_pct": sl,
-            "position_pct": 0.025
+            "position_pct": 0.5
         }
         strategy.on_init(params)
         result = engine.run(strategy, bars, contract_mode=True)
