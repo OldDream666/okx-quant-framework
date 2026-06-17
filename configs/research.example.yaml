@@ -32,6 +32,8 @@ exchange:
   tick_size: 0.01                 # 最小价格变动（ETH 精度）
   latency_bars: 1                 # 信号→执行延迟（1 = 下根 K 线成交，防未来函数）
   leverage: 20                    # 杠杆倍数
+  enable_liquidation: true        # 开启强平模拟（高杠杆必开！）
+  maintenance_margin_ratio: 0.005 # 维持保证金率（OKX ETH-USDT-SWAP 默认 0.5%）
   contract_multiplier: 1.0        # 合约面值（ETH-USDT-SWAP = 1.0）
   funding_rate: 0.0001            # 模拟资金费率（0.01%/8h）
 
