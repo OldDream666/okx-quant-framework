@@ -1,34 +1,48 @@
+# ============================================================
 # 投研回测配置模板
-# 复制后修改: cp configs/research.example.yaml configs/research.yaml
+# ============================================================
+# 用法: cp configs/research.example.yaml configs/research.yaml
+# 运行:
+#   python run_research.py -c configs/research.yaml              # 全流程
+#   python run_research.py -c configs/research.yaml -m baseline  # 只跑基准
+#   python run_research.py -c configs/research.yaml -m grid      # 只跑寻优
+#   python run_research.py -c configs/research.yaml -m walkforward  # 只跑盲测
+# ============================================================
 
-symbol: "ETH-USDT-SWAP"
-timeframe: "15m"
-days: 90
-strategy: "strategies.macro_ema.MacroEmaStrategy"
+# --- 数据源 ---
+symbol: "ETH-USDT-SWAP"          # OKX 产品 ID
+timeframe: "15m"                  # K 线周期
+days: 90                          # 拉取历史天数（越长越慢，但样本越充足）
+strategy: "strategies.macro_ema.MacroEmaStrategy"  # 策略类路径
 
+# --- 基准参数（步骤一回归测试用）---
 strategy_params:
-  fast_period: 10
-  slow_period: 50
-  macro_period: 800
-  stop_loss_pct: 0.05
-  position_pct: 0.5
+  fast_period: 10                 # 快线 EMA 周期
+  slow_period: 50                 # 慢线 EMA 周期
+  macro_period: 800               # 宏观 EMA 周期（0 = 禁用）
+  stop_loss_pct: 0.05             # 止损幅度（0.05 = 5%）
+  position_pct: 0.5               # 每笔仓位占总资金比例（0.5 = 50%）
 
-initial_capital: 10000
+# --- 回测引擎（模拟真实交易成本）---
+initial_capital: 10000            # 初始资金（USDT）
 exchange:
-  maker_fee_rate: 0.0002
-  taker_fee_rate: 0.0005
-  slippage_base: 0.0003
-  tick_size: 0.01
-  latency_bars: 1
-  leverage: 20
-  contract_multiplier: 1.0
-  funding_rate: 0.0001
+  maker_fee_rate: 0.0002          # Maker 手续费（限价单，0.02%）
+  taker_fee_rate: 0.0005          # Taker 手续费（市价单，0.05%）
+  slippage_base: 0.0003           # 基础滑点（0.03%）
+  tick_size: 0.01                 # 最小价格变动（ETH 精度）
+  latency_bars: 1                 # 信号→执行延迟（1 = 下根 K 线成交，防未来函数）
+  leverage: 20                    # 杠杆倍数
+  contract_multiplier: 1.0        # 合约面值（ETH-USDT-SWAP = 1.0）
+  funding_rate: 0.0001            # 模拟资金费率（0.01%/8h）
 
+# --- 网格寻优搜索空间（步骤二）---
 grid_search:
-  fast_periods: [10, 15, 20]
-  slow_periods: [30, 40, 50]
-  stop_losses: [0.05, 0.08, 0.10]
+  fast_periods: [10, 15, 20]      # 快线候选值
+  slow_periods: [30, 40, 50]      # 慢线候选值
+  stop_losses: [0.05, 0.08, 0.10] # 止损候选值（5%, 8%, 10%）
+  # 总组合数 = len(fast) × len(slow) × len(stop)，排除 fast >= slow
 
+# --- Walk-Forward 验证（步骤三）---
 walk_forward:
-  train_pct: 0.7
-  overfit_threshold: 0.5
+  train_pct: 0.7                  # 训练集比例（70% 训练 / 30% 盲测）
+  overfit_threshold: 0.5          # 夏普衰减容忍度（0.5 = 允许衰减 50%）

@@ -1,26 +1,35 @@
+# ============================================================
 # 实盘/模拟盘配置模板
-# 复制后修改: cp configs/paper_trading.example.yaml configs/paper_trading.yaml
+# ============================================================
+# 用法: cp configs/paper_trading.example.yaml configs/paper_trading.yaml
+# 启动: python run_live.py --config configs/paper_trading.yaml
+# ============================================================
 
-symbol: "ETH-USDT-SWAP"
-timeframe: "15m"
-leverage: 20
-strategy: "strategies.macro_ema.MacroEmaStrategy"
+# --- 交易品种 ---
+symbol: "ETH-USDT-SWAP"          # OKX 产品 ID（BTC-USDT-SWAP, ETH-USDT-SWAP 等）
+timeframe: "15m"                  # K 线周期（1m, 5m, 15m, 1H, 4H, 1D）
+leverage: 20                      # 杠杆倍数（1-125，合约专用）
+
+# --- 策略 ---
+strategy: "strategies.macro_ema.MacroEmaStrategy"  # 策略类路径（module.ClassName）
 
 strategy_params:
-  fast_period: 10
-  slow_period: 50
-  macro_period: 800
-  stop_loss_pct: 0.05
-  position_pct: 0.025
+  fast_period: 10                 # 快线 EMA 周期
+  slow_period: 50                 # 慢线 EMA 周期（必须 > fast_period）
+  macro_period: 800               # 宏观 EMA 周期（0 = 禁用宏观滤网）
+  stop_loss_pct: 0.05             # 止损幅度（0.05 = 5%）
+  position_pct: 0.025             # 每笔仓位占总资金比例（0.025 = 2.5%）
 
+# --- 风控 ---
 risk:
-  max_order_value: 50000
-  max_total_exposure: 200000
-  max_price_deviation: 0.05
-  max_orders_per_sec: 5
-  max_consecutive_failures: 5
-  max_slippage_pct: 0.01
-  max_drawdown_pct: 0.20
+  max_order_value: 50000          # 单笔最大下单金额（USDT）
+  max_total_exposure: 200000      # 总持仓上限（USDT）
+  max_price_deviation: 0.05       # 限价单偏离市价最大幅度（0.05 = 5%，防乌龙指）
+  max_orders_per_sec: 5           # 每秒最大下单次数（防暴走）
+  max_consecutive_failures: 5     # 连续失败次数 → 触发 Kill Switch（永久锁定）
+  max_slippage_pct: 0.01          # 成交滑点超阈值 → 触发 Kill Switch（0.01 = 1%）
+  max_drawdown_pct: 0.20          # 账户回撤超阈值 → 触发 Kill Switch（0.20 = 20%）
 
-preload_bars: 900
-log_level: "INFO"
+# --- 启动参数 ---
+preload_bars: 900                 # 启动时预加载历史 K 线数（消除策略预热等待）
+log_level: "INFO"                 # 日志级别（DEBUG, INFO, WARNING, ERROR）
