@@ -278,13 +278,19 @@ class InstrumentData:
     @classmethod
     def from_okx(cls, data: dict[str, Any]) -> InstrumentData:
         """从 OKX ``/api/v5/public/instruments`` 响应项解析。"""
+        def _float(val: Any, default: float) -> float:
+            """安全浮点转换，空字符串返回默认值。"""
+            if val is None or val == "":
+                return default
+            return float(val)
+
         return cls(
             symbol=data["instId"],
             inst_type=InstrumentType(data.get("instType", "SPOT")),
-            tick_size=float(data.get("tickSz", 0.01)),
-            lot_size=float(data.get("lotSz", 0.00000001)),
-            min_size=float(data.get("minSz", 0)),
-            contract_multiplier=float(data.get("ctMult", 1) or 1),
+            tick_size=_float(data.get("tickSz"), 0.01),
+            lot_size=_float(data.get("lotSz"), 0.00000001),
+            min_size=_float(data.get("minSz"), 0.0),
+            contract_multiplier=_float(data.get("ctMult"), 1.0),
             state=data.get("state", "live"),
         )
 
