@@ -605,8 +605,9 @@ class LiveRunner:
             return
         try:
             positions = await self._rest.get_positions()
-            self._strategy.state.position_long = None
-            self._strategy.state.position_short = None
+            # 先收集新持仓，查询成功后再覆盖（防止 REST 失败丢仓位）
+            new_long = None
+            new_short = None
             for pos in positions:
                 if pos.symbol != self._symbol or pos.quantity == 0:
                     continue
@@ -617,16 +618,19 @@ class LiveRunner:
                     contract_multiplier=pos.contract_multiplier,
                 )
                 if pos.side.value == "long" or (pos.side.value == "net" and pos.quantity >= 0):
-                    self._strategy.state.position_long = strategy_pos
+                    new_long = strategy_pos
                 else:
-                    self._strategy.state.position_short = strategy_pos
+                    new_short = strategy_pos
+            # 查询成功，安全覆盖
+            self._strategy.state.position_long = new_long
+            self._strategy.state.position_short = new_short
             logger.info(
                 "🔄 持仓同步: long=%s short=%s",
                 f"{self._strategy.position_long.quantity:.6f}" if self._strategy.position_long else "无",
                 f"{self._strategy.position_short.quantity:.6f}" if self._strategy.position_short else "无",
             )
         except Exception as exc:
-            logger.warning("持仓同步失败: %s", exc)
+            logger.warning("持仓同步失败: %s — 保留旧仓位", exc)
 
     # ------------------------------------------------------------------
     # Kill Switch 回调
@@ -638,25 +642,39 @@ class LiveRunner:
         if self._oms:
             active = self._oms.get_active_orders(self._symbol)
             for order in active:
-                asyncio.ensure_future(
-                    self._oms.cancel_order(self._symbol, order.order_id)
-                )
+                asyncio.ensure_future(self._cancel_order_safe(order.order_id))
 
         # 市价平掉所有持仓
         pos_long = self._strategy.position_long
         if pos_long and pos_long.quantity > 0:
             logger.critical("🚨 Kill Switch: 市价平多仓 %.6f", pos_long.quantity)
             if self._oms:
-                asyncio.ensure_future(self._oms.submit_order(
-                    self._symbol, "sell", "market", str(pos_long.quantity),
-                    pos_side="long",
-                ))
+                asyncio.ensure_future(self._close_position_safe("long", pos_long.quantity))
 
         pos_short = self._strategy.position_short
         if pos_short and pos_short.quantity > 0:
             logger.critical("🚨 Kill Switch: 市价平空仓 %.6f", pos_short.quantity)
             if self._oms:
-                asyncio.ensure_future(self._oms.submit_order(
-                    self._symbol, "buy", "market", str(pos_short.quantity),
-                    pos_side="short",
-                ))
+                asyncio.ensure_future(self._close_position_safe("short", pos_short.quantity))
+
+    async def _cancel_order_safe(self, order_id: str) -> None:
+        """安全撤单（Kill Switch 专用，捕获异常并记录日志）。"""
+        try:
+            await self._oms.cancel_order(self._symbol, order_id)
+            logger.info("✅ Kill Switch 撤单成功: %s", order_id)
+        except Exception as exc:
+            logger.error("❌ Kill Switch 撤单失败 %s: %s", order_id, exc)
+
+    async def _close_position_safe(self, pos_side: str, quantity: float) -> None:
+        """安全平仓（Kill Switch 专用，捕获异常并记录日志）。"""
+        try:
+            side = "sell" if pos_side == "long" else "buy"
+            result = await self._oms.submit_order(
+                self._symbol, side, "market", str(quantity),
+                pos_side=pos_side,
+            )
+            logger.info("✅ Kill Switch 平仓成功: %s %s → ordId=%s",
+                        pos_side, quantity, result.order_id)
+        except Exception as exc:
+            logger.critical("❌ Kill Switch 平仓失败 %s %.6f: %s",
+                            pos_side, quantity, exc)
