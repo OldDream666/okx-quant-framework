@@ -66,7 +66,7 @@ async def fetch_history(
     print(f"⏳ 拉取 {symbol} 最近 {days} 天 {bar} K 线...")
 
     while True:
-        batch = await rest.get_history_candles(symbol, bar, after=after, limit=100)
+        batch = await rest.get_history_candles(symbol, bar, after=after, limit=300)
         if not batch:
             break
 
@@ -190,15 +190,15 @@ def run_grid_search(
     fast_periods = grid.get("fast_periods", [10, 15, 20])
     slow_periods = grid.get("slow_periods", [30, 40, 50])
     stop_losses = grid.get("stop_losses", [0.05, 0.08, 0.10])
-    macro_period = config["strategy_params"].get("macro_period", 800)
-    position_pct = config["strategy_params"].get("position_pct", 0.5)
+    position_pcts = grid.get("position_pcts", [config["strategy_params"].get("position_pct", 0.5)])
 
+    search_keys = ["fast_period", "slow_period", "stop_loss_pct", "position_pct"]
     base_params = {k: v for k, v in config["strategy_params"].items()
-                   if k not in ("fast_period", "slow_period", "stop_loss_pct")}
+                   if k not in search_keys}
 
     combinations = [
-        (f, s, sl)
-        for f, s, sl in itertools.product(fast_periods, slow_periods, stop_losses)
+        (f, s, sl, p)
+        for f, s, sl, p in itertools.product(fast_periods, slow_periods, stop_losses, position_pcts)
         if f < s
     ]
     print(f"🚀 共 {len(combinations)} 组参数组合\n")
@@ -207,12 +207,13 @@ def run_grid_search(
     best_params: dict[str, Any] = {}
     results: list[dict[str, Any]] = []
 
-    for i, (fast, slow, sl) in enumerate(combinations, 1):
+    for i, (fast, slow, sl, pos_pct) in enumerate(combinations, 1):
         params = {
             **base_params,
             "fast_period": fast,
             "slow_period": slow,
             "stop_loss_pct": sl,
+            "position_pct": pos_pct,
         }
 
         engine = create_engine(config)
@@ -237,7 +238,7 @@ def run_grid_search(
             marker = " ⭐"
 
         print(f"  [{i:2d}/{len(combinations)}] "
-              f"EMA({fast}/{slow}) SL={sl:.0%} | "
+              f"EMA({fast}/{slow}) SL={sl:.0%} 仓位={pos_pct:.0%} | "
               f"夏普={result.sharpe_ratio:+.2f} "
               f"收益={result.total_return:+.2%} "
               f"回撤={result.max_drawdown:.2%} "
@@ -278,8 +279,9 @@ def run_walk_forward(
             "fast_period": grid.get("fast_periods", [10, 15, 20]),
             "slow_period": grid.get("slow_periods", [30, 40, 50]),
             "stop_loss_pct": grid.get("stop_losses", [0.05, 0.08, 0.10]),
+            "position_pct": grid.get("position_pcts", [0.5]),
         }
-        # 加入非搜索的基础参数
+        # 加入非搜索的基础参数（macro_period 等固定值）
         base_params = {k: v for k, v in config["strategy_params"].items()
                        if k not in param_grid}
         for k, v in base_params.items():

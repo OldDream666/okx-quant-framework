@@ -39,10 +39,11 @@ exchange:
 
 # --- 网格寻优搜索空间（步骤二）---
 grid_search:
-  fast_periods: [10, 15, 20]      # 快线候选值
-  slow_periods: [30, 40, 50]      # 慢线候选值
-  stop_losses: [0.05, 0.08, 0.10] # 止损候选值（5%, 8%, 10%）
-  # 总组合数 = len(fast) × len(slow) × len(stop)，排除 fast >= slow
+  fast_periods: [10, 15, 20]          # 快线候选值
+  slow_periods: [30, 40, 50]          # 慢线候选值
+  stop_losses: [0.05, 0.08, 0.10]     # 止损候选值（5%, 8%, 10%）
+  position_pcts: [0.025, 0.05, 0.1, 0.25, 0.5]  # 仓位候选值（2.5%, 5%, 10%, 25%, 50%）
+  # 总组合数 = len(fast) × len(slow) × len(stop) × len(position)，排除 fast >= slow
 
 # --- Walk-Forward 验证（步骤三）---
 walk_forward:
