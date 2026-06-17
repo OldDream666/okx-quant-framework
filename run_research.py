@@ -189,13 +189,19 @@ def run_grid_search(
     grid = config.get("grid_search", {})
 
     # 通用：从 grid_search 读取所有搜索维度
-    # YAML key → 参数名映射：去掉尾部 s（fast_periods → fast_period）
+    # YAML key → 参数名映射（支持 _pcts/_periods/_losses 等后缀）
+    _KEY_MAP = {
+        "fast_periods": "fast_period",
+        "slow_periods": "slow_period",
+        "stop_losses": "stop_loss_pct",
+        "position_pcts": "position_pct",
+    }
     param_names: list[str] = []
     value_lists: list[list] = []
     for key, values in grid.items():
         if not isinstance(values, list):
             continue
-        param_name = key.rstrip("s")  # fast_periods → fast_period
+        param_name = _KEY_MAP.get(key, key.rstrip("s"))
         param_names.append(param_name)
         value_lists.append(values)
 
@@ -279,11 +285,17 @@ def run_walk_forward(
     grid = config.get("grid_search", {})
     param_grid = None
     if grid:
+        _KEY_MAP = {
+            "fast_periods": "fast_period",
+            "slow_periods": "slow_period",
+            "stop_losses": "stop_loss_pct",
+            "position_pcts": "position_pct",
+        }
         param_grid = {}
         for key, values in grid.items():
             if not isinstance(values, list):
                 continue
-            param_name = key.rstrip("s")  # fast_periods → fast_period
+            param_name = _KEY_MAP.get(key, key.rstrip("s"))
             param_grid[param_name] = values
         # 加入非搜索的基础参数（macro_period 等固定值）
         search_keys = set(param_grid.keys())

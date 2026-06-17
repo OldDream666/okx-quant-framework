@@ -1,0 +1,62 @@
+# DOGE-USDT-SWAP 自适应 EMA 策略投研配置
+# 用法: python run_research.py --config configs/research_adaptive_doge.yaml
+
+symbol: "DOGE-USDT-SWAP"
+timeframe: "15m"
+days: 120
+strategy: "strategies.adaptive_ema.AdaptiveEmaStrategy"
+
+strategy_params:
+  # 趋势行情参数
+  trend_fast: 10
+  trend_slow: 50
+  trend_sl: 0.05
+  trend_position_pct: 0.05
+
+  # 震荡行情参数
+  range_fast: 20
+  range_slow: 30
+  range_sl: 0.08
+  range_position_pct: 0.03
+
+  # 极端波动参数
+  extreme_sl: 0.12
+  extreme_position_pct: 0.02
+
+  # 状态检测
+  adx_period: 14
+  adx_trend: 25
+  adx_range: 20
+  atr_period: 14
+  atr_extreme_mult: 2.0
+
+  # 宏观滤网（0=禁用）
+  macro_period: 0
+
+  silent: true
+
+initial_capital: 50
+exchange:
+  maker_fee_rate: 0.0002
+  taker_fee_rate: 0.0005
+  slippage_base: 0.0005
+  tick_size: 0.0000001
+  latency_bars: 1
+  leverage: 20
+  enable_liquidation: true
+  maintenance_margin_ratio: 0.005
+  contract_multiplier: 1.0
+  funding_rate: 0.00005
+
+grid_search:
+  trend_fasts: [10, 15]
+  trend_slows: [40, 50]
+  trend_sls: [0.05, 0.08]
+  range_fasts: [15, 20]
+  range_slows: [25, 30]
+  range_sls: [0.06, 0.08]
+  adx_trends: [20, 25, 30]
+
+walk_forward:
+  train_pct: 0.7
+  overfit_threshold: 0.5

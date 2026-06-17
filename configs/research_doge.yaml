@@ -1,0 +1,43 @@
+# DOGE-USDT-SWAP 投研配置
+# 用法: python run_research.py --config configs/research_doge.yaml
+
+symbol: "DOGE-USDT-SWAP"
+timeframe: "15m"
+days: 120
+strategy: "strategies.rsi_reversal.RsiReversalStrategy"
+
+strategy_params:
+  rsi_period: 14
+  rsi_oversold: 30
+  rsi_overbought: 70
+  trend_ema_period: 200
+  atr_period: 14
+  atr_sl_mult: 1.5
+  atr_tp_mult: 3.0
+  position_pct: 0.05
+  silent: true
+
+initial_capital: 50
+exchange:
+  maker_fee_rate: 0.0002
+  taker_fee_rate: 0.0005
+  slippage_base: 0.0005           # DOGE 波动大，滑点放大
+  tick_size: 0.0000001            # DOGE 最小变动价位 1e-7
+  latency_bars: 1
+  leverage: 20
+  enable_liquidation: true
+  maintenance_margin_ratio: 0.005
+  contract_multiplier: 1.0
+  funding_rate: 0.00005
+
+grid_search:
+  rsi_periods: [7, 14, 21]
+  rsi_oversolds: [25, 30, 35]
+  rsi_overboughts: [65, 70, 75]
+  atr_sl_mults: [1.0, 1.5, 2.0]
+  atr_tp_mults: [2.0, 3.0, 4.0]
+  position_pcts: [0.025, 0.05, 0.1]
+
+walk_forward:
+  train_pct: 0.7
+  overfit_threshold: 0.5

@@ -1,0 +1,48 @@
+# DOGE-USDT-SWAP 实盘配置（自适应 EMA 策略）
+# Walk-Forward 验证通过：训练集 Sharpe 3.04，测试集 Sharpe 2.79，衰减 8.2%
+# 用法: python run_live.py --config configs/paper_trading_doge.yaml
+
+symbol: "DOGE-USDT-SWAP"
+timeframe: "15m"
+leverage: 20
+
+strategy: "strategies.adaptive_ema.AdaptiveEmaStrategy"
+
+strategy_params:
+  # 趋势行情（ADX > 20）
+  trend_fast: 15
+  trend_slow: 50
+  trend_sl: 0.08
+  trend_position_pct: 0.05
+
+  # 震荡行情（ADX < 20）
+  range_fast: 20
+  range_slow: 30
+  range_sl: 0.08
+  range_position_pct: 0.03
+
+  # 极端波动（ATR > 2x 均值）
+  extreme_sl: 0.12
+  extreme_position_pct: 0.02
+
+  # 状态检测
+  adx_period: 14
+  adx_trend: 20
+  adx_range: 20
+  atr_period: 14
+  atr_extreme_mult: 2.0
+
+  # 宏观滤网（0=禁用）
+  macro_period: 0
+
+risk:
+  max_order_value: 5000
+  max_total_exposure: 10000
+  max_price_deviation: 0.10
+  max_orders_per_sec: 5
+  max_consecutive_failures: 5
+  max_slippage_pct: 0.01
+  max_drawdown_pct: 0.20
+
+preload_bars: 900
+log_level: "INFO"
