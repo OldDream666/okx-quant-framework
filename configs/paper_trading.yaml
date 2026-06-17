@@ -14,9 +14,9 @@ strategy: "strategies.macro_ema.MacroEmaStrategy"   # 策略类路径 (module.Cl
 
 strategy_params:
   fast_period: 10             # 快线 EMA 周期
-  slow_period: 40             # 慢线 EMA 周期
+  slow_period: 50             # 慢线 EMA 周期
   macro_period: 800           # 宏观 EMA 周期 (0=禁用)
-  stop_loss_pct: 0.08         # 止损幅度 (8%)
+  stop_loss_pct: 0.05         # 止损幅度 (5%)
   position_pct: 0.5           # 每笔仓位占总资金比例 (50%)
 
 # --- 风控 ---
