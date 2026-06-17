@@ -261,7 +261,7 @@ def run_walk_forward(
     strategy_class: type[BaseStrategy],
     params: dict[str, Any],
 ) -> dict[str, Any]:
-    """Walk-Forward 滚动前向验证。"""
+    """Walk-Forward 滚动前向验证（训练集自动寻优 → 测试集盲测）。"""
     print("\n" + "=" * 50)
     print(" 🛡️ 步骤三：Walk-Forward 盲测")
     print("=" * 50)
@@ -269,6 +269,21 @@ def run_walk_forward(
     wf_config = config.get("walk_forward", {})
     train_pct = wf_config.get("train_pct", 0.7)
     overfit_threshold = wf_config.get("overfit_threshold", 0.5)
+
+    # 从 YAML 读取网格搜索空间，传给 Walk-Forward 做训练集内寻优
+    grid = config.get("grid_search", {})
+    param_grid = None
+    if grid:
+        param_grid = {
+            "fast_period": grid.get("fast_periods", [10, 15, 20]),
+            "slow_period": grid.get("slow_periods", [30, 40, 50]),
+            "stop_loss_pct": grid.get("stop_losses", [0.05, 0.08, 0.10]),
+        }
+        # 加入非搜索的基础参数
+        base_params = {k: v for k, v in config["strategy_params"].items()
+                       if k not in param_grid}
+        for k, v in base_params.items():
+            param_grid[k] = [v]
 
     engine = create_engine(config)
     result = engine.run_walk_forward(
@@ -278,14 +293,21 @@ def run_walk_forward(
         train_pct=train_pct,
         overfit_threshold=overfit_threshold,
         contract_mode=True,
+        param_grid=param_grid,
     )
+
+    if param_grid and result.best_params:
+        print(f"  📊 训练集最优参数: {result.best_params}")
+        print(f"  📊 训练集 Sharpe:  {result.train_sharpe:.2f}")
+        print(f"  📊 测试集 Sharpe:  {result.test_sharpe:.2f}")
+        print(f"  📊 夏普衰减:      {result.sharpe_degradation:.1%}")
 
     if result.is_overfit:
         print(f"❌ 过拟合警告: {result.overfit_warning}")
-        return {"is_overfit": True, "warning": result.overfit_warning}
+        return {"is_overfit": True, "warning": result.overfit_warning, "best_params": result.best_params}
     else:
         print("✅ 策略稳健：通过未知数据盲测！")
-        return {"is_overfit": False}
+        return {"is_overfit": False, "best_params": result.best_params}
 
 
 # ======================================================================

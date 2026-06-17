@@ -255,6 +255,8 @@ class WalkForwardResult:
         sharpe_ratio:    test_sharpe / train_sharpe（越接近 1.0 越稳健）。
         is_overfit:      如果 Sharpe 衰减超过阈值则为 True。
         overfit_warning: 人类可读的警告信息（未过拟合时为空）。
+        best_params:     训练集寻优找到的最优参数。
+        search_results:  训练集所有参数组合的回测结果。
     """
 
     train_result: BacktestResult
@@ -265,6 +267,8 @@ class WalkForwardResult:
     sharpe_degradation: float   # 1 - test/train (0 = perfect, >0.5 = likely overfit)
     is_overfit: bool
     overfit_warning: str
+    best_params: dict[str, Any]
+    search_results: list[dict[str, Any]]
 
 
 # ---------------------------------------------------------------------------
@@ -481,25 +485,34 @@ class BacktestEngine:
         train_pct: float = 0.7,
         overfit_threshold: float = 0.5,
         contract_mode: bool = False,
+        param_grid: dict[str, list] | None = None,
     ) -> WalkForwardResult:
-        """运行 Walk-forward 验证：训练 → 测试 → 比较。
+        """运行 Walk-forward 验证：训练集寻优 → 测试集盲测 → 比较。
 
-        将 *bars* 分为训练集（前 ``train_pct``）和测试集（剩余部分）。
-        在**两个**集合上独立运行策略，比较 Sharpe 比率以检测过拟合。
+        流程：
+        1. 将 *bars* 分为训练集（前 ``train_pct``）和测试集（剩余部分）。
+        2. 如果提供了 *param_grid*，在训练集上做网格寻优找到最优参数。
+           否则使用传入的 *params*。
+        3. 用最优参数分别跑训练集和测试集，比较 Sharpe 比率。
 
         Parameters:
             strategy_factory:  策略**类**（非实例）。为每个集合创建新实例。
             bars:              完整的历史数据集。
-            params:            传递给 ``strategy.on_init()`` 的参数。
+            params:            当不提供 param_grid 时，直接使用的参数。
             train_pct:         用于训练的 K 线比例（默认 0.7）。
             overfit_threshold: Sharpe 衰减阈值（默认 0.5）。
                                如果 ``(1 - test_sharpe/train_sharpe) > threshold``，
                                结果被标记为过拟合。
             contract_mode:     启用双仓位交易。
+            param_grid:        网格搜索空间，如 {"fast_period": [10,15,20], "slow_period": [30,40,50]}。
+                               提供时在训练集上自动寻优，忽略 *params*。
+                               不提供时使用 *params*（简化版，向后兼容）。
 
         Returns:
             包含训练/测试结果和过拟合分析的 :class:`WalkForwardResult`。
         """
+        import itertools
+
         if train_pct <= 0 or train_pct >= 1:
             raise ValueError(f"train_pct must be in (0, 1), got {train_pct}")
         if len(bars) < 10:
@@ -516,14 +529,45 @@ class BacktestEngine:
                 f"Need at least 5 bars in each set."
             )
 
-        # Run on training set
+        # --- 阶段 1：训练集寻优 ---
+        best_params = params or {}
+        search_results: list[dict[str, Any]] = []
+
+        if param_grid:
+            keys = list(param_grid.keys())
+            value_lists = [param_grid[k] for k in keys]
+            combinations = list(itertools.product(*value_lists))
+
+            best_sharpe = -999.0
+            print(f"  🔍 训练集寻优: {len(combinations)} 组参数...")
+
+            for combo in combinations:
+                trial_params = dict(zip(keys, combo))
+                # 跳过 fast >= slow 的不合理组合
+                if "fast_period" in trial_params and "slow_period" in trial_params:
+                    if trial_params["fast_period"] >= trial_params["slow_period"]:
+                        continue
+
+                s = strategy_factory()
+                s.on_init(trial_params)
+                r = self.run(s, train_bars, contract_mode)
+
+                row = {**trial_params, "sharpe": r.sharpe_ratio, "return": r.total_return}
+                search_results.append(row)
+
+                if r.sharpe_ratio > best_sharpe and r.total_return > 0:
+                    best_sharpe = r.sharpe_ratio
+                    best_params = trial_params
+
+            print(f"  ✅ 训练集最优: {best_params} (Sharpe={best_sharpe:.2f})")
+
+        # --- 阶段 2：用最优参数跑训练集和测试集 ---
         train_strategy = strategy_factory()
-        train_strategy.on_init(params or {})
+        train_strategy.on_init(best_params)
         train_result = self.run(train_strategy, train_bars, contract_mode)
 
-        # Run on test set (fresh strategy instance, same params)
         test_strategy = strategy_factory()
-        test_strategy.on_init(params or {})
+        test_strategy.on_init(best_params)
         test_result = self.run(test_strategy, test_bars, contract_mode)
 
         # Compare Sharpe ratios
@@ -558,6 +602,8 @@ class BacktestEngine:
             sharpe_degradation=degradation,
             is_overfit=is_overfit,
             overfit_warning=warning,
+            best_params=best_params,
+            search_results=search_results,
         )
 
     # ------------------------------------------------------------------
