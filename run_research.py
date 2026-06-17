@@ -181,40 +181,43 @@ def run_grid_search(
     bars: list[BarData],
     strategy_class: type[BaseStrategy],
 ) -> dict[str, Any]:
-    """网格参数寻优。"""
+    """网格参数寻优（通用版，支持任意策略参数）。"""
     print("\n" + "=" * 50)
     print(" 🔍 步骤二：网格寻优")
     print("=" * 50)
 
     grid = config.get("grid_search", {})
-    fast_periods = grid.get("fast_periods", [10, 15, 20])
-    slow_periods = grid.get("slow_periods", [30, 40, 50])
-    stop_losses = grid.get("stop_losses", [0.05, 0.08, 0.10])
-    position_pcts = grid.get("position_pcts", [config["strategy_params"].get("position_pct", 0.5)])
 
-    search_keys = ["fast_period", "slow_period", "stop_loss_pct", "position_pct"]
+    # 通用：从 grid_search 读取所有搜索维度
+    # YAML key → 参数名映射：去掉尾部 s（fast_periods → fast_period）
+    param_names: list[str] = []
+    value_lists: list[list] = []
+    for key, values in grid.items():
+        if not isinstance(values, list):
+            continue
+        param_name = key.rstrip("s")  # fast_periods → fast_period
+        param_names.append(param_name)
+        value_lists.append(values)
+
+    if not param_names:
+        print("⚠️ grid_search 为空，跳过寻优")
+        return {"best_params": config["strategy_params"], "best_sharpe": 0, "all_results": []}
+
+    # 不参与搜索的固定参数
+    search_keys = set(param_names)
     base_params = {k: v for k, v in config["strategy_params"].items()
                    if k not in search_keys}
 
-    combinations = [
-        (f, s, sl, p)
-        for f, s, sl, p in itertools.product(fast_periods, slow_periods, stop_losses, position_pcts)
-        if f < s
-    ]
-    print(f"🚀 共 {len(combinations)} 组参数组合\n")
+    combinations = list(itertools.product(*value_lists))
+    print(f"🚀 共 {len(combinations)} 组参数组合（搜索维度: {', '.join(param_names)}）\n")
 
     best_sharpe = -999.0
     best_params: dict[str, Any] = {}
     results: list[dict[str, Any]] = []
 
-    for i, (fast, slow, sl, pos_pct) in enumerate(combinations, 1):
-        params = {
-            **base_params,
-            "fast_period": fast,
-            "slow_period": slow,
-            "stop_loss_pct": sl,
-            "position_pct": pos_pct,
-        }
+    for i, combo in enumerate(combinations, 1):
+        trial_params = dict(zip(param_names, combo))
+        params = {**base_params, **trial_params}
 
         engine = create_engine(config)
         strategy = strategy_class()
@@ -222,7 +225,7 @@ def run_grid_search(
         result = engine.run(strategy, bars, contract_mode=True)
 
         row = {
-            "fast": fast, "slow": slow, "sl": sl,
+            **trial_params,
             "return": result.total_return,
             "sharpe": result.sharpe_ratio,
             "drawdown": result.max_drawdown,
@@ -237,8 +240,9 @@ def run_grid_search(
             best_params = params
             marker = " ⭐"
 
-        print(f"  [{i:2d}/{len(combinations)}] "
-              f"EMA({fast}/{slow}) SL={sl:.0%} 仓位={pos_pct:.0%} | "
+        # 简洁输出：显示搜索参数值
+        param_str = " ".join(f"{k}={v}" for k, v in trial_params.items())
+        print(f"  [{i:3d}/{len(combinations)}] {param_str} | "
               f"夏普={result.sharpe_ratio:+.2f} "
               f"收益={result.total_return:+.2%} "
               f"回撤={result.max_drawdown:.2%} "
@@ -275,17 +279,17 @@ def run_walk_forward(
     grid = config.get("grid_search", {})
     param_grid = None
     if grid:
-        param_grid = {
-            "fast_period": grid.get("fast_periods", [10, 15, 20]),
-            "slow_period": grid.get("slow_periods", [30, 40, 50]),
-            "stop_loss_pct": grid.get("stop_losses", [0.05, 0.08, 0.10]),
-            "position_pct": grid.get("position_pcts", [0.5]),
-        }
+        param_grid = {}
+        for key, values in grid.items():
+            if not isinstance(values, list):
+                continue
+            param_name = key.rstrip("s")  # fast_periods → fast_period
+            param_grid[param_name] = values
         # 加入非搜索的基础参数（macro_period 等固定值）
-        base_params = {k: v for k, v in config["strategy_params"].items()
-                       if k not in param_grid}
-        for k, v in base_params.items():
-            param_grid[k] = [v]
+        search_keys = set(param_grid.keys())
+        for k, v in config["strategy_params"].items():
+            if k not in search_keys:
+                param_grid[k] = [v]
 
     engine = create_engine(config)
     result = engine.run_walk_forward(
