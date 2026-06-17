@@ -34,10 +34,20 @@ source .venv/bin/activate
 pip install -e ".[dev]"
 ```
 
-### 1.2 配置 API 密钥
+### 1.2 配置
 
 ```bash
+# 1. API 密钥
 cp .env.example .env
+
+# 2. 实盘配置
+cp configs/paper_trading.example.yaml configs/paper_trading.yaml
+
+# 3. 投研配置（可选，回测用）
+cp configs/research.example.yaml configs/research.yaml
+
+# 4. 自定义策略（可选）
+cp strategies/my_strategy.example.py strategies/my_strategy.py
 ```
 
 编辑 `.env`：
@@ -93,15 +103,21 @@ okx_quant/                  ← 框架核心（不改）
     └── metrics.py          ← 指标采集 + 动态Sharpe + 心跳监控 + 异步Webhook报警
 
 strategies/                 ← 你的策略（经常改）
-└── macro_ema.py            ← Macro EMA 交叉 + 宏观滤网
+├── macro_ema.py            ← Macro EMA 交叉 + 宏观滤网（参考实现）
+└── my_strategy.example.py  ← 策略模板（从此文件开始写自己的策略）
 
-configs/                    ← 参数配置（YAML）
-└── paper_trading.yaml      ← 模拟盘配置
+configs/                    ← 参数配置（YAML，不提交到 Git）
+├── paper_trading.example.yaml  ← 实盘配置模板
+├── paper_trading.yaml          ← 你的实际配置（.gitignore 排除）
+├── research.example.yaml       ← 投研配置模板
+└── research.yaml               ← 你的实际配置（.gitignore 排除）
 
 scripts/                    ← 工具脚本
-└── diagnose_order.py       ← OKX API 下单诊断
+├── diagnose_order.py       ← OKX API 下单诊断
+└── api_audit.py            ← 16 项全流程接口审计
 
-run_live.py                 ← 通用启动脚本
+run_live.py                 ← 通用实盘启动脚本
+run_research.py             ← 投研流水线（基准→寻优→盲测）
 data/                       ← 交易账本（自动创建）
 ├── backtest/               ← 回测账本
 └── live/                   ← 实盘账本

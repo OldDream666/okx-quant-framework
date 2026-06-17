@@ -43,10 +43,11 @@ okx_quant/
 ├── risk/             # 🛡️ 风控拦截器（代理模式, Kill Switch）
 └── monitoring/       # 📒 日志 + 账本 + 报警（loguru, JSONL, Webhook）
 
-strategies/           # 📝 用户策略
-configs/              # ⚙️ YAML 配置文件
-run_live.py           # 🏃 通用启动脚本
-scripts/              # 🔧 诊断脚本
+strategies/           # 📝 用户策略（macro_ema.py + 策略模板）
+configs/              # ⚙️ YAML 配置文件（.example 模板，实际文件不提交）
+scripts/              # 🔧 诊断 & 审计脚本
+run_live.py           # 🏃 通用实盘启动脚本
+run_research.py       # 🔬 投研流水线（基准→寻优→盲测）
 data/                 # 💾 交易账本（自动创建）
 ```
 
@@ -68,6 +69,7 @@ pip install -e ".[dev]"
 
 ```bash
 cp .env.example .env
+cp configs/paper_trading.example.yaml configs/paper_trading.yaml
 ```
 
 编辑 `.env`：
