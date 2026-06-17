@@ -1,21 +1,18 @@
-# OKX 量化投研配置
-# 用法: python run_research.py --config configs/research.yaml
+# 投研回测配置模板
+# 复制后修改: cp configs/research.example.yaml configs/research.yaml
 
-# --- 基础设置 ---
 symbol: "ETH-USDT-SWAP"
 timeframe: "15m"
-days: 90                              # 拉取历史天数
+days: 90
 strategy: "strategies.macro_ema.MacroEmaStrategy"
 
-# --- 策略参数（基准回归用）---
 strategy_params:
   fast_period: 10
-  slow_period: 40
+  slow_period: 50
   macro_period: 800
-  stop_loss_pct: 0.08
+  stop_loss_pct: 0.05
   position_pct: 0.5
 
-# --- 回测引擎参数 ---
 initial_capital: 10000
 exchange:
   maker_fee_rate: 0.0002
@@ -27,13 +24,11 @@ exchange:
   contract_multiplier: 1.0
   funding_rate: 0.0001
 
-# --- 网格寻优搜索空间 ---
 grid_search:
   fast_periods: [10, 15, 20]
   slow_periods: [30, 40, 50]
   stop_losses: [0.05, 0.08, 0.10]
 
-# --- Walk-Forward 验证 ---
 walk_forward:
   train_pct: 0.7
   overfit_threshold: 0.5

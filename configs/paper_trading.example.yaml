@@ -1,0 +1,26 @@
+# 实盘/模拟盘配置模板
+# 复制后修改: cp configs/paper_trading.example.yaml configs/paper_trading.yaml
+
+symbol: "ETH-USDT-SWAP"
+timeframe: "15m"
+leverage: 20
+strategy: "strategies.macro_ema.MacroEmaStrategy"
+
+strategy_params:
+  fast_period: 10
+  slow_period: 50
+  macro_period: 800
+  stop_loss_pct: 0.05
+  position_pct: 0.025
+
+risk:
+  max_order_value: 50000
+  max_total_exposure: 200000
+  max_price_deviation: 0.05
+  max_orders_per_sec: 5
+  max_consecutive_failures: 5
+  max_slippage_pct: 0.01
+  max_drawdown_pct: 0.20
+
+preload_bars: 900
+log_level: "INFO"

@@ -28,3 +28,7 @@ data/
 # OS
 .DS_Store
 Thumbs.db
+
+# 实际配置文件（含敏感参数，只保留 .example 模板）
+configs/paper_trading.yaml
+configs/research.yaml
