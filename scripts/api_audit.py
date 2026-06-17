@@ -356,7 +356,7 @@ class APIAuditor:
         await self._run_case("限价单 → 查询 → 撤单", _limit_order_and_cancel())
 
         # 4.2 市价单（开多 → 平多）
-        async def _market_order_lifecycle():
+        async def _market_order_long():
             # 开多
             open_order = await self.oms.submit_order(
                 symbol=self.symbol,
@@ -398,9 +398,52 @@ class APIAuditor:
 
             return result
 
-        await self._run_case("市价开多 → 持仓查询 → 市价平多", _market_order_lifecycle())
+        await self._run_case("市价开多 → 持仓查询 → 市价平多", _market_order_long())
 
-        # 4.3 OMS 订单生命周期
+        # 4.3 市价单（开空 → 平空）
+        async def _market_order_short():
+            # 开空
+            open_order = await self.oms.submit_order(
+                symbol=self.symbol,
+                side="sell",
+                order_type="market",
+                size="0.001",
+                pos_side="short",
+            )
+            result = f"市价开空: ordId={open_order.order_id}, status={open_order.status.value}"
+
+            await asyncio.sleep(2)
+
+            # 查询持仓
+            positions = await self.rest.get_positions()
+            short_pos = [p for p in positions if p.symbol == self.symbol and p.quantity < 0]
+            if short_pos:
+                p = short_pos[0]
+                result += f"\n  持仓: qty={p.quantity}, avg={p.avg_price:.2f}"
+            else:
+                result += "\n  ⚠️ 未检测到空头持仓"
+
+            # 平空
+            close_order = await self.oms.submit_order(
+                symbol=self.symbol,
+                side="buy",
+                order_type="market",
+                size="0.001",
+                pos_side="short",
+            )
+            result += f"\n  市价平空: ordId={close_order.order_id}, status={close_order.status.value}"
+
+            await asyncio.sleep(1)
+
+            positions_after = await self.rest.get_positions()
+            short_after = [p for p in positions_after if p.symbol == self.symbol and p.quantity < 0]
+            result += f"\n  平仓后空头持仓: {len(short_after)} 个"
+
+            return result
+
+        await self._run_case("市价开空 → 持仓查询 → 市价平空", _market_order_short())
+
+        # 4.4 OMS 订单生命周期
         async def _oms_lifecycle():
             tick = await self.rest.get_ticker(self.symbol)
             price = str(round(tick.last * 0.85, 2))  # 远离市价
@@ -437,7 +480,7 @@ class APIAuditor:
 
         await self._run_case("OMS 订单生命周期（提交→查询→撤单→验证）", _oms_lifecycle())
 
-        # 4.4 查询挂单
+        # 4.5 查询挂单
         async def _get_open_orders():
             orders = await self.rest.get_open_orders(self.symbol)
             return f"当前挂单数: {len(orders)}"

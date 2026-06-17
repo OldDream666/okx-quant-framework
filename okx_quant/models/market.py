@@ -213,6 +213,9 @@ class PositionData:
             side = PositionSide.LONG if pos >= 0 else PositionSide.SHORT
         else:
             side = PositionSide(side_str)
+            # 双向持仓模式：OKX 返回的 pos 对空头也是正数，需要取反
+            if side == PositionSide.SHORT and pos > 0:
+                pos = -pos
         return cls(
             symbol=data["instId"],
             side=side,
